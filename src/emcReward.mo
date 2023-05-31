@@ -34,16 +34,9 @@ module {
         var distributed: Nat;
     };
 
-    public type RewardOverall = {
-        var rewardBlance: Nat;
-        var totalReward: Nat;
-        var totalDistributed: Nat;
-        var totalStaked: Nat;
-    };
-
     public type StakeRecord = {
         nodeID : Text;
-        nodeOwner : Principal;
+        nodeWallet : Principal;
         stakeAmount : Nat;
         stakeDays : Nat;
         stakeTime : Time.Time;

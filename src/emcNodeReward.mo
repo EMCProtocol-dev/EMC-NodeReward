@@ -71,15 +71,11 @@ shared (msg) actor class EmcNodeReward(
     type NodeValidationUnit = emcNode.NodeValidationUnit;
     type NodeValidationPool = HashMap.HashMap<Text, HashMap.HashMap<Text, NodeValidationUnit>>;
 
-    private stable var routerNodeEntries : [(Text, Node)] = [];
-    private stable var validatorNodeEntries : [(Text, Node)] = [];
-    private stable var computingNodeEntries : [(Text, Node)] = [];
+    private stable var nodeEntries : [(Text, Node)] = [];
     private stable var validatorEntries : [(Principal, Time.Time)] = [];
     private stable var validationPoolEntries : [(Int, [(Text, [(Text, NodeValidationUnit)])])] = [];
 
-    private var routerNodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-    private var validatorNodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-    private var computingNodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
+    private var nodePool = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
     private var validators = HashMap.HashMap<Principal, Time.Time>(1, Principal.equal, Principal.hash);
     private var validationPools = TrieMap.TrieMap<Int, NodeValidationPool>(Int.equal, Int.hash);
 
@@ -142,89 +138,51 @@ shared (msg) actor class EmcNodeReward(
 
     //node management
     public shared (msg) func registerNode(_nodetype : NodeType, _nodeID : Text, _wallet : Principal) : async emcResult {
-        let tmp : Node = {
-            nodeType = _nodetype;
-            nodeID = _nodeID;
-            owner = msg.caller;
-            wallet = _wallet;
-            nodeStatus = #Alive;
-            registered = Time.now();
-            lastActiveTime = Time.now();
-        };
+        switch (nodePool.get(_nodeID)) {
+            case (?node) {
+                return #Err(#NodeAlreadyExist);
+            };
+            case (_) {
+                if (_nodetype == NodeValidator) {
+                    if (validators.get(msg.caller) == null) {
+                        return #Err(#NotAValidator);
+                    };
+                };
 
-        if (_nodetype == NodeRouter) {
-            if (routerNodes.get(_nodeID) != null) {
-                return #Err(#NodeAlreadyExist);
-            };
-            routerNodes.put(_nodeID, tmp);
-            return #Ok(0);
-        } else if (_nodetype == NodeValidator) {
-            if (validators.get(msg.caller) == null) {
-                return #Err(#NotAValidator);
-            };
+                if (
+                    _nodetype != NodeValidator and _nodetype != NodeRouter and _nodetype != NodeComputing
+                ) {
+                    return #Err(#UnknowType);
+                };
 
-            if (validatorNodes.get(_nodeID) != null) {
-                return #Err(#NodeAlreadyExist);
+                let tmp : Node = {
+                    nodeType = _nodetype;
+                    nodeID = _nodeID;
+                    owner = msg.caller;
+                    wallet = _wallet;
+                    registered = Time.now();
+                };
+                nodePool.put(_nodeID, tmp);
+                return #Ok(0);
             };
-            validatorNodes.put(_nodeID, tmp);
-            return #Ok(0);
-        } else if (_nodetype == NodeComputing) {
-            if (computingNodes.get(_nodeID) != null) {
-                return #Err(#NodeAlreadyExist);
-            };
-            computingNodes.put(_nodeID, tmp);
-            return #Ok(0);
-        } else {
-            return #Err(#UnknowType);
         };
     };
 
-    private func unregisterRouterNode(caller : Principal, nodeID : Text) {
-        switch (routerNodes.get(nodeID)) {
+    private func unregisterNode(caller : Principal, nodeID : Text) {
+        switch (nodePool.get(nodeID)) {
             case (?node) {
                 if (node.wallet == caller) {
-                    routerNodes.delete(nodeID);
+                    nodePool.delete(nodeID);
                 };
             };
             case (_) {};
         };
     };
 
-    private func unregisterValidatorNode(caller : Principal, nodeID : Text) {
-        switch (validatorNodes.get(nodeID)) {
+    public shared query (msg) func myNode(nodeID : Text) : async [Node] {
+        switch (nodePool.get(nodeID)) {
             case (?node) {
-                if (node.wallet == caller) {
-                    routerNodes.delete(nodeID);
-                };
-            };
-            case (_) {};
-        };
-    };
-
-    private func unregisterComputingNode(caller : Principal, nodeID : Text) {
-        switch (computingNodes.get(nodeID)) {
-            case (?node) {
-                if (node.wallet == caller) {
-                    routerNodes.delete(nodeID);
-                };
-            };
-            case (_) {};
-        };
-    };
-
-    public shared query (msg) func myNode(nodeID : Text) : async [(Principal, Nat)] {
-        var node : ?Node = null;
-        if (routerNodes.get(nodeID) != null) {
-            node := routerNodes.get(nodeID);
-        } else if (validatorNodes.get(nodeID) != null) {
-            node := validatorNodes.get(nodeID);
-        } else if (computingNodes.get(nodeID) != null) {
-            node := computingNodes.get(nodeID);
-        };
-
-        switch (node) {
-            case (?n) {
-                return [(n.wallet,n.nodeType)];
+                return [node];
             };
             case (_) {
                 return [];
@@ -232,60 +190,19 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared (msg) func unregisterNode(nodetype : Nat, nodeID : Text) : async emcResult {
-        if (nodetype == NodeRouter) {
-            unregisterRouterNode(msg.caller, nodeID);
-        } else if (nodetype == NodeValidator) {
-            unregisterValidatorNode(msg.caller, nodeID);
-        } else if (nodetype == NodeComputing) {
-            unregisterComputingNode(msg.caller, nodeID);
-        } else {
-            return #Err(#UnknowType);
-        };
-        return #Ok(0);
-    };
+    public query func listNodes(start : Nat, limit : Nat) : async [(Text, Node)] {
+        var nodearray = Iter.toArray(nodePool.entries());
 
-    public query func listNodes(nodeType : NodeType, start : Nat, limit : Nat) : async [(Text, Node)] {
-        var nodes : [(Text, Node)] = [];
-        if (nodeType == NodeRouter) {
-            nodes := Iter.toArray(routerNodes.entries());
-        } else if (nodeType == NodeValidator) {
-            nodes := Iter.toArray(validatorNodes.entries());
-        } else if (nodeType == NodeComputing) {
-            nodes := Iter.toArray(computingNodes.entries());
+        assert (start <= nodePool.size());
+        if (start + limit > nodePool.size()) {
+            return Array.subArray<(Text, Node)>(nodearray, start, nodePool.size() -start);
         } else {
-            return [];
-        };
-
-        assert (start <= nodes.size());
-        if (start + limit > nodes.size()) {
-            return Array.subArray<(Text, Node)>(nodes, start, nodes.size() -start);
-        } else {
-            return Array.subArray<(Text, Node)>(nodes, start, limit);
+            return Array.subArray<(Text, Node)>(nodearray, start, limit);
         };
     };
 
-    public query func listComputingNodes(start : Nat, limit : Nat) : async [(Text, Node)] {
-        let nodes = Iter.toArray(computingNodes.entries());
-        assert (start <= nodes.size());
-        if (start + limit > nodes.size()) {
-            return Array.subArray<(Text, Node)>(nodes, start, nodes.size() -start);
-        } else {
-            return Array.subArray<(Text, Node)>(nodes, start, limit);
-        };
-    };
-
-    private func getNodePrincipal(nodeID : Text, nodeType : NodeType) : ?Principal {
-        var node : ?Node = null;
-        if (nodeType == NodeRouter) {
-            node := routerNodes.get(nodeID);
-        } else if (nodeType == NodeValidator) {
-            node := validatorNodes.get(nodeID);
-        } else if (nodeType == NodeComputing) {
-            node := computingNodes.get(nodeID);
-        };
-
-        switch (node) {
+    private func getNodePrincipal(nodeID : Text) : ?Principal {
+        switch (nodePool.get(nodeID)) {
             case (?n) {
                 return ?n.wallet;
             };
@@ -295,9 +212,20 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
+    private func getNodeType(nodeID : Text) : ?Nat {
+        switch (nodePool.get(nodeID)) {
+            case (?n) {
+                return ?n.nodeType;
+            };
+            case (_) {
+                return null;
+            };
+        };
+    };
+
     //node validated
     private func nodeValidated(nv : NodeValidationUnit, day : Int, count : Nat) {
-        var principal = getNodePrincipal(nv.nodeID, nv.nodeType);
+        var principal = getNodePrincipal(nv.nodeID);
         switch (principal) {
             case (?p) {
                 switch (rewardPools.get(day)) {
@@ -403,24 +331,33 @@ shared (msg) actor class EmcNodeReward(
         var today = Time.now() / dayNanos;
 
         for (val in _validations.vals()) {
-            // new validation unit
-            let unit : NodeValidationUnit = {
-                nodeID = val.targetNodeID;
-                nodeType = val.nodeType;
-                validator = val.validator;
-                validationTicket = val.validationTicket;
-                power = 15000 * 10000 / val.power; //X10000 to avoid using float type
-                validationDay = today;
+            switch (getNodeType(val.targetNodeID)) {
+                case (?nodetype) {
+                    // new validation unit
+                    let unit : NodeValidationUnit = {
+                        nodeID = val.targetNodeID;
+                        nodeType = nodetype;
+                        validator = val.validator;
+                        validationTicket = val.validationTicket;
+                        power = 15000 * 10000 / val.power; //X10000 to avoid using float type
+                        validationDay = today;
+                    };
+
+                    //check yestoday
+                    if (addNewNodeValidation(unit, today -1, false)) {
+                        confirmed += 1;
+                    } else {
+                        if (addNewNodeValidation(unit, today, true)) {
+                            confirmed += 1;
+                        } else {};
+                    };
+
+                };
+                case (_) {
+
+                };
             };
 
-           //check yestoday
-            if (addNewNodeValidation(unit, today -1, false)) {
-                confirmed += 1;
-            } else {
-                if (addNewNodeValidation(unit, today, true)) {
-                    confirmed += 1;
-                } else {};
-            };
         };
         return #Ok(confirmed);
     };
@@ -473,61 +410,65 @@ shared (msg) actor class EmcNodeReward(
         emcReward.getDayReward(age);
     };
 
-    public shared (msg) func stake(emcAmount : Nat, days : Nat, nodeID : Text, owner : Principal) : async emcResult {
-        var power : Nat = (
-            if (validatorNodes.get(nodeID) != null) {
-                if (days < 360) { return #Err(#StakeTooShort) };
-                10000000;
-            } else if (routerNodes.get(nodeID) != null) {
-                if (days < 180) { return #Err(#StakeTooShort) };
-                100000;
-            } else if (computingNodes.get(nodeID) != null) {
-                switch (days) {
-                    case 7 { 14000 };
-                    case 30 { 27000 };
-                    case 90 { 62000 };
-                    case 180 { 100000 };
-                    case other { 10000 };
-                };
-            } else {
-                return #Err(#NodeNotExist);
-            }
-        );
+    public shared (msg) func stake(emcAmount : Nat, days : Nat, nodeID : Text) : async emcResult {
+        switch (nodePool.get(nodeID)) {
+            case (?node) {
+                var power : Nat = (
+                    if (node.nodeType == NodeValidator) {
+                        if (days < 360) { return #Err(#StakeTooShort) };
+                        10000000;
+                    } else if (node.nodeType == NodeRouter) {
+                        if (days < 180) { return #Err(#StakeTooShort) };
+                        100000;
+                    } else {
+                        switch (days) {
+                            case 7 { 14000 };
+                            case 30 { 27000 };
+                            case 90 { 62000 };
+                            case 180 { 100000 };
+                            case other { 10000 };
+                        };
+                    }
+                );
+                switch (stakePool.get(node.wallet)) {
+                    case (?stakeRecord) {
+                        return #Err(#StakedBefore);
+                    };
+                    case (_) {
+                        let result = await tokenCanister.transferFrom(msg.caller, Principal.fromActor(self), emcAmount);
+                        switch (result) {
+                            case (#Ok(amount)) {
+                                let stakeRecord : emcReward.StakeRecord = {
+                                    staker = msg.caller;
+                                    stakeAmount = emcAmount;
+                                    stakeDays = days;
+                                    stakeTime = Time.now();
+                                    var balance = emcAmount;
+                                    nodeWallet = node.wallet;
+                                    nodeID = nodeID;
+                                    var stakingPower = power;
+                                };
+                                stakePool.put(node.wallet, stakeRecord);
+                                totalStaking += emcAmount;
+                                return #Ok(amount);
+                            };
+                            case (#Err(others)) {
+                                return #Err(#TokenTransferFailed);
+                            };
+                        };
 
-        switch (stakePool.get(owner)) {
-            case (?stakeRecord) {
-                return #Err(#StakedBefore);
+                    };
+                };
+
             };
             case (_) {
-                let result = await tokenCanister.transferFrom(msg.caller, Principal.fromActor(self), emcAmount);
-                switch (result) {
-                    case (#Ok(amount)) {
-                        let stakeRecord : emcReward.StakeRecord = {
-                            staker = msg.caller;
-                            stakeAmount = emcAmount;
-                            stakeDays = days;
-                            stakeTime = Time.now();
-                            var balance = emcAmount;
-                            nodeOwner = owner;
-                            nodeID = nodeID;
-                            var stakingPower = power;
-                        };
-                        stakePool.put(owner, stakeRecord);
-                        totalStaking += emcAmount;
-                        return #Ok(amount);
-                    };
-                    case (#Err(others)) {
-                        return #Err(#TokenTransferFailed);
-                    };
-                };
-
+                return #Err(#NodeNotExist);
             };
         };
-
     };
 
-    public shared (msg) func unstake(nodeOwner : Principal) : async emcResult {
-        switch (stakePool.get(nodeOwner)) {
+    public shared (msg) func unstake(nodeWallet : Principal) : async emcResult {
+        switch (stakePool.get(nodeWallet)) {
             case (?stakeRecord) {
                 if (stakeRecord.staker == msg.caller) {
                     if (testnetRunning and stakeRecord.stakeTime + stakeRecord.stakeDays * dayNanos < Time.now()) {
@@ -540,7 +481,7 @@ shared (msg) actor class EmcNodeReward(
                             stakeRecord.balance := 0;
                             stakeRecord.stakingPower := 1;
                             totalStaking -= stakeRecord.stakeAmount;
-                            stakePool.delete(nodeOwner);
+                            stakePool.delete(nodeWallet);
                             return #Ok(stakeRecord.stakeAmount);
                         };
                         case (others) {
@@ -557,8 +498,8 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared query (msg) func myStake(nodeOwner : Principal) : async (Nat, Nat, Nat) {
-        let stake = stakePool.get(nodeOwner);
+    public shared query (msg) func myStake(nodeWallet : Principal) : async (Nat, Nat, Nat) {
+        let stake = stakePool.get(nodeWallet);
         switch (stake) {
             case (?stake) {
                 return (stake.stakeAmount, stake.stakeDays, stake.stakingPower);
@@ -569,8 +510,8 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    private func getStakePower(nodeOwner : Principal) : Nat {
-        switch (stakePool.get(nodeOwner)) {
+    private func getStakePower(nodeWallet : Principal) : Nat {
+        switch (stakePool.get(nodeWallet)) {
             case (?record) {
                 record.stakingPower;
             };
@@ -676,9 +617,7 @@ shared (msg) actor class EmcNodeReward(
     * upgrade functions
     */
     system func preupgrade() {
-        routerNodeEntries := Iter.toArray(routerNodes.entries());
-        validatorNodeEntries := Iter.toArray(validatorNodes.entries());
-        computingNodeEntries := Iter.toArray(computingNodes.entries());
+        nodeEntries := Iter.toArray(nodePool.entries());
         validatorEntries := Iter.toArray(validators.entries());
 
         rewardStatusEntries := Iter.toArray(rewardStatus.entries());
@@ -686,12 +625,8 @@ shared (msg) actor class EmcNodeReward(
     };
 
     system func postupgrade() {
-        routerNodes := HashMap.fromIter<Text, Node>(routerNodeEntries.vals(), 1, Text.equal, Text.hash);
-        routerNodeEntries := [];
-        validatorNodes := HashMap.fromIter<Text, Node>(validatorNodeEntries.vals(), 1, Text.equal, Text.hash);
-        validatorNodeEntries := [];
-        computingNodes := HashMap.fromIter<Text, Node>(computingNodeEntries.vals(), 1, Text.equal, Text.hash);
-        computingNodeEntries := [];
+        nodePool := HashMap.fromIter<Text, Node>(nodeEntries.vals(), 1, Text.equal, Text.hash);
+        nodeEntries := [];
         validators := HashMap.fromIter<Principal, Time.Time>(validatorEntries.vals(), 1, Principal.equal, Principal.hash);
         validatorEntries := [];
 

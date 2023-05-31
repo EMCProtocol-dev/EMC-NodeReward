@@ -25,7 +25,6 @@ module {
         owner : Principal;
         wallet : Principal;
         registered : Time.Time;
-        lastActiveTime: Time.Time;
     };
 
     public type NodeValidationRequest = {
