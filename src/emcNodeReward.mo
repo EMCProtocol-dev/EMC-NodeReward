@@ -43,6 +43,7 @@ shared (msg) actor class EmcNodeReward(
             #TokenTransferFailed;
             #StakedBefore;
             #StakeTooShort;
+            #StakeNotEnough;
             #NoStakeFound;
             #CanNotUnstake;
         };
@@ -81,20 +82,22 @@ shared (msg) actor class EmcNodeReward(
 
     //node staking
     private var tokenCanister : emc_token_dip20.Token = actor (token);
-    private stable var stakePoolEntires : [(Principal, emcReward.StakeRecord)] = [];
-    private var stakePool = HashMap.HashMap<Principal, emcReward.StakeRecord>(1, Principal.equal, Principal.hash);
+    private stable var stakePoolEntires : [(Text, emcReward.StakeRecord)] = [];
+    private var stakePool = HashMap.HashMap<Text, emcReward.StakeRecord>(1, Text.equal, Text.hash);
 
     //reward definations
-    type NodeRewardRecordPool = HashMap.HashMap<Principal, emcReward.RewardRecord>;
+    type NodeRewardRecordPool = HashMap.HashMap<Text, emcReward.RewardRecord>;
 
     private var timerID : Nat = 0;
     private stable var startDay : Nat = Int.abs(Time.now() / dayNanos);
 
     private stable var rewardPoolsEntries : [(Int, [(Principal, emcReward.RewardRecord)])] = [];
-    private stable var rewardStatusEntries : [(Principal, emcReward.RewardStatus)] = [];
+    private stable var failedRewardEntries : [(Text, emcReward.FailedReward)] = [];
+    private stable var rewardStatusEntries : [(Text, emcReward.RewardStatus)] = [];
 
     private var rewardPools = TrieMap.TrieMap<Int, NodeRewardRecordPool>(Int.equal, Int.hash);
-    private var rewardStatus = HashMap.HashMap<Principal, emcReward.RewardStatus>(1, Principal.equal, Principal.hash);
+    private var failedRewardPool = HashMap.HashMap<Text, emcReward.FailedReward>(1, Text.equal, Text.hash);
+    private var rewardStatus = HashMap.HashMap<Text, emcReward.RewardStatus>(1, Text.equal, Text.hash);
 
     public shared (msg) func stopTestnet(stop : Bool) : async emcResult {
         assert (msg.caller == owner);
@@ -224,29 +227,20 @@ shared (msg) actor class EmcNodeReward(
     };
 
     //return validated times and total computing power for current day
-    public shared query (msg) func myCurrentEPower(nodeID : Text):async (Nat, Nat){
-        var wallet =  getNodePrincipal(nodeID);
+    public shared query (msg) func myCurrentEPower(nodeID : Text) : async (Nat, Nat) {
         var today = Time.now() / dayNanos;
-        switch (wallet) {
-            case (?p) {
-                switch (rewardPools.get(today)) {
-                    case (?rewardPool) {
-                        switch (rewardPool.get(p)) {
-                            case (?record) {
-                                return (record.validatedTimes, record.computingPower);
-                            };
-                            case (_){
-                            };
-                        };
+        switch (rewardPools.get(today)) {
+            case (?rewardPool) {
+                switch (rewardPool.get(nodeID)) {
+                    case (?record) {
+                        return (record.validatedTimes, record.computingPower);
                     };
-                    case (_) {
-                    };
+                    case (_) {};
                 };
             };
-            case (_) {
-            };
+            case (_) {};
         };
-        return (0,0);   
+        return (0, 0);
     };
 
     //node validated
@@ -256,10 +250,10 @@ shared (msg) actor class EmcNodeReward(
             case (?p) {
                 switch (rewardPools.get(day)) {
                     case (?rewardPool) {
-                        switch (rewardPool.get(p)) {
+                        switch (rewardPool.get(nv.nodeID)) {
                             case (?record) {
                                 if (nv.nodeType == NodeComputing) {
-                                    record.computingPower += averagePower; 
+                                    record.computingPower += averagePower;
                                 } else {
                                     record.computingPower += 10000; //for validator and router, power set to 1(*10000)
                                 };
@@ -267,7 +261,8 @@ shared (msg) actor class EmcNodeReward(
                             };
                             case (_) {
                                 let rewardRecord : emcReward.RewardRecord = {
-                                    account = p;
+                                    nodeID = nv.nodeID;
+                                    wallet = p;
                                     var computingPower = averagePower;
                                     var totalPower = 0;
                                     var validatedTimes = 1;
@@ -275,13 +270,14 @@ shared (msg) actor class EmcNodeReward(
                                     var rewardDay = day;
                                     var distributed = 0;
                                 };
-                                rewardPool.put(p, rewardRecord);
+                                rewardPool.put(nv.nodeID, rewardRecord);
                             };
                         };
                     };
                     case (_) {
                         let rewardRecord : emcReward.RewardRecord = {
-                            account = p;
+                            nodeID = nv.nodeID;
+                            wallet = p;
                             var computingPower = averagePower;
                             var totalPower = 0;
                             var validatedTimes = 1;
@@ -289,8 +285,8 @@ shared (msg) actor class EmcNodeReward(
                             var rewardDay = day;
                             var distributed = 0;
                         };
-                        let rewardPool = HashMap.HashMap<Principal, emcReward.RewardRecord>(1, Principal.equal, Principal.hash);
-                        rewardPool.put(p, rewardRecord);
+                        let rewardPool = HashMap.HashMap<Text, emcReward.RewardRecord>(1, Text.equal, Text.hash);
+                        rewardPool.put(nv.nodeID, rewardRecord);
                         rewardPools.put(day, rewardPool);
                     };
                 };
@@ -317,16 +313,16 @@ shared (msg) actor class EmcNodeReward(
                                 //node validation by new validator
                                 nodeValidations.put(recordText, nv);
                                 if (nodeValidations.size() * 3 > validators.size() * 2) {
-                                    if((nodeValidations.size()-1) * 3 <= validators.size() * 2){
-                                        //node validation confirm here with average computing power 
+                                    if ((nodeValidations.size() -1) * 3 <= validators.size() * 2) {
+                                        //node validation confirm here with average computing power
                                         //base on first comping x validations
                                         var averagePower : Nat = 0;
-                                        for(val in nodeValidations.vals()){
+                                        for (val in nodeValidations.vals()) {
                                             averagePower += val.power;
                                         };
                                         averagePower /= nodeValidations.size();
-                                        nodeValidated(nv, day, averagePower);    
-                                    }else{
+                                        nodeValidated(nv, day, averagePower);
+                                    } else {
                                         //ignore the later coming y validations
                                     };
                                 };
@@ -453,11 +449,16 @@ shared (msg) actor class EmcNodeReward(
                 var power : Nat = (
                     if (node.nodeType == NodeValidator) {
                         if (days < 360) { return #Err(#StakeTooShort) };
-                        10000000;
+                        if (emcAmount < 1000000) {
+                            return #Err(#StakeNotEnough);
+                        };
+                        emcAmount * 10000 / 1000000;
                     } else if (node.nodeType == NodeRouter) {
                         if (days < 180) { return #Err(#StakeTooShort) };
-                        100000;
+                        if (emcAmount < 100000) { return #Err(#StakeNotEnough) };
+                        emcAmount * 10000 / 100000;
                     } else {
+                        //here should check min staking amount for computing node, TBD
                         switch (days) {
                             case 7 { 14000 };
                             case 30 { 27000 };
@@ -467,7 +468,7 @@ shared (msg) actor class EmcNodeReward(
                         };
                     }
                 );
-                switch (stakePool.get(node.wallet)) {
+                switch (stakePool.get(nodeID)) {
                     case (?stakeRecord) {
                         return #Err(#StakedBefore);
                     };
@@ -485,7 +486,7 @@ shared (msg) actor class EmcNodeReward(
                                     nodeID = nodeID;
                                     var stakingPower = power;
                                 };
-                                stakePool.put(node.wallet, stakeRecord);
+                                stakePool.put(nodeID, stakeRecord);
                                 totalStaking += emcAmount;
                                 return #Ok(amount);
                             };
@@ -504,8 +505,8 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared (msg) func unstake(nodeWallet : Principal) : async emcResult {
-        switch (stakePool.get(nodeWallet)) {
+    public shared (msg) func unStake(nodeID : Text) : async emcResult {
+        switch (stakePool.get(nodeID)) {
             case (?stakeRecord) {
                 if (stakeRecord.staker == msg.caller) {
                     if (testnetRunning and stakeRecord.stakeTime + stakeRecord.stakeDays * dayNanos < Time.now()) {
@@ -518,7 +519,7 @@ shared (msg) actor class EmcNodeReward(
                             stakeRecord.balance := 0;
                             stakeRecord.stakingPower := 1;
                             totalStaking -= stakeRecord.stakeAmount;
-                            stakePool.delete(nodeWallet);
+                            stakePool.delete(nodeID);
                             return #Ok(stakeRecord.stakeAmount);
                         };
                         case (others) {
@@ -535,20 +536,18 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared query (msg) func myStake(nodeWallet : Principal) : async (Nat, Nat, Nat) {
-        let stake = stakePool.get(nodeWallet);
-        switch (stake) {
+    public shared query (msg) func myStake(nodeID : Text) : async (Nat, Nat, Nat) {
+        switch (stakePool.get(nodeID)) {
             case (?stake) {
                 return (stake.stakeAmount, stake.stakeDays, stake.stakingPower);
             };
-            case (_) {
-                return (0, 0, 10000);
-            };
+            case (_) {};
         };
+        (0, 0, 10000);
     };
 
-    private func getStakePower(nodeWallet : Principal) : Nat {
-        switch (stakePool.get(nodeWallet)) {
+    private func getStakePower(nodeID : Text) : Nat {
+        switch (stakePool.get(nodeID)) {
             case (?record) {
                 record.stakingPower;
             };
@@ -558,33 +557,45 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    private func updateRewardStatus(_account : Principal, newReward : Nat, newDistribution : Nat) : () {
-        switch (rewardStatus.get(_account)) {
+    private func updateRewardStatus(_nodeID : Text, _wallet : Principal, newReward : Nat, newDistribution : Nat) : () {
+        switch (rewardStatus.get(_nodeID)) {
             case (?record) {
                 record.totalReward += newReward;
                 record.distributed += newDistribution;
             };
             case (_) {
                 var record : emcReward.RewardStatus = {
-                    account = _account;
+                    nodeID = _nodeID;
+                    wallet = _wallet;
                     var totalReward = newReward;
                     var distributed = newDistribution;
                 };
-                rewardStatus.put(_account, record);
+                rewardStatus.put(_nodeID, record);
             };
         };
         totalReward += newReward;
         totalDistributed += newDistribution;
     };
 
-    public shared query (msg) func showRewardStatus(account : Principal) : async (Principal, Nat, Nat) {
-        switch (rewardStatus.get(account)) {
+    public shared query (msg) func showRewardStatus(nodeID : Text) : async (Text, Nat, Nat) {
+        switch (rewardStatus.get(nodeID)) {
             case (?record) {
-                return (account, record.totalReward, record.distributed);
+                return (nodeID, record.totalReward, record.distributed);
             };
             case (_) {
-                return (account, 0, 0);
+                return (nodeID, 0, 0);
             };
+        };
+    };
+
+    public shared query (msg) func showFaildReward(start : Nat, limit : Nat) : async [(Text, emcReward.FailedReward)] {
+        var recordArray = Iter.toArray(failedRewardPool.entries());
+
+        assert (start <= failedRewardPool.size());
+        if (start + limit > failedRewardPool.size()) {
+            return Array.subArray<(Text, emcReward.FailedReward)>(recordArray, start, failedRewardPool.size() -start);
+        } else {
+            return Array.subArray<(Text, emcReward.FailedReward)>(recordArray, start, limit);
         };
     };
 
@@ -598,21 +609,37 @@ shared (msg) actor class EmcNodeReward(
             case (?rewardRecords) {
                 var totalPower : Nat = 0;
                 for (val in rewardRecords.vals()) {
-                    val.totalPower := val.computingPower * getStakePower(val.account);
+                    val.totalPower := val.computingPower * getStakePower(val.nodeID);
                     totalPower += val.totalPower;
                 };
                 for (val in rewardRecords.vals()) {
                     val.rewardAmount := dayReward * val.totalPower / totalPower;
-                    updateRewardStatus(val.account, val.rewardAmount, 0); //update reward
-                    let result = await tokenCanister.transferFrom(Principal.fromActor(self), val.account, val.rewardAmount);
+                    updateRewardStatus(val.nodeID, val.wallet, val.rewardAmount, 0); //update reward
+                    let result = await tokenCanister.transferFrom(Principal.fromActor(self), val.wallet, val.rewardAmount);
                     switch (result) {
                         case (#Ok(amount)) {
                             rewardBalance -= val.rewardAmount;
                             val.distributed := Time.now();
-                            updateRewardStatus(val.account, 0, val.rewardAmount); //update distribution
+                            updateRewardStatus(val.nodeID, val.wallet, 0, val.rewardAmount); //update distribution
                         };
                         case (others) {
                             val.distributed := 0;
+                            var key = val.nodeID # "-" # Nat.toText(targetDay);
+
+                            failedRewardPool.put(
+                                key,
+                                {
+                                    nodeID = val.nodeID;
+                                    wallet = val.wallet;
+                                    computingPower = val.computingPower;
+                                    validatedTimes = val.validatedTimes;
+                                    rewardAmount = val.rewardAmount;
+                                    totalPower = val.totalPower;
+                                    rewardDay = val.rewardDay;
+                                    dayPower = totalPower;
+                                    faildTime = Time.now();
+                                },
+                            );
                         };
                     };
                 };
@@ -658,6 +685,7 @@ shared (msg) actor class EmcNodeReward(
         validatorEntries := Iter.toArray(validators.entries());
 
         rewardStatusEntries := Iter.toArray(rewardStatus.entries());
+        failedRewardEntries := Iter.toArray(failedRewardPool.entries());
         stakePoolEntires := Iter.toArray(stakePool.entries());
     };
 
@@ -667,7 +695,8 @@ shared (msg) actor class EmcNodeReward(
         validators := HashMap.fromIter<Principal, Time.Time>(validatorEntries.vals(), 1, Principal.equal, Principal.hash);
         validatorEntries := [];
 
-        rewardStatus := HashMap.fromIter<Principal, emcReward.RewardStatus>(rewardStatusEntries.vals(), 1, Principal.equal, Principal.hash);
-        stakePool := HashMap.fromIter<Principal, emcReward.StakeRecord>(stakePoolEntires.vals(), 1, Principal.equal, Principal.hash);
+        rewardStatus := HashMap.fromIter<Text, emcReward.RewardStatus>(rewardStatusEntries.vals(), 1, Text.equal, Text.hash);
+        failedRewardPool := HashMap.fromIter<Text, emcReward.FailedReward>(failedRewardEntries.vals(), 1, Text.equal, Text.hash);
+        stakePool := HashMap.fromIter<Text, emcReward.StakeRecord>(stakePoolEntires.vals(), 1, Text.equal, Text.hash);
     };
 };

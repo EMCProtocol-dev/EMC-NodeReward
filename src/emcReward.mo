@@ -19,7 +19,8 @@ module {
     let stageLength : Nat = 90;
 
     public type RewardRecord = {
-        account : Principal;
+        nodeID : Text;
+        wallet : Principal;
         var computingPower: Nat;
         var validatedTimes: Nat;
         var rewardAmount: Nat;
@@ -28,8 +29,21 @@ module {
         var distributed: Time.Time;
     };
 
+    public type FailedReward = {
+        nodeID : Text;
+        wallet : Principal;
+        computingPower: Nat;
+        validatedTimes: Nat;
+        rewardAmount: Nat;
+        totalPower: Nat;
+        rewardDay : Int;
+        dayPower : Nat;
+        faildTime: Time.Time;
+    };
+
     public type RewardStatus = {
-        account : Principal;
+        nodeID : Text;
+        wallet : Principal;
         var totalReward: Nat;
         var distributed: Nat;
     };
