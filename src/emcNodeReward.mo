@@ -223,27 +223,54 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
+    //return validated times and total computing power for current day
+    public shared query (msg) func myCurrentEPower(nodeID : Text):async (Nat, Nat){
+        var wallet =  getNodePrincipal(nodeID);
+        var today = Time.now() / dayNanos;
+        switch (wallet) {
+            case (?p) {
+                switch (rewardPools.get(today)) {
+                    case (?rewardPool) {
+                        switch (rewardPool.get(p)) {
+                            case (?record) {
+                                return (record.validatedTimes, record.computingPower);
+                            };
+                            case (_){
+                            };
+                        };
+                    };
+                    case (_) {
+                    };
+                };
+            };
+            case (_) {
+            };
+        };
+        return (0,0);   
+    };
+
     //node validated
-    private func nodeValidated(nv : NodeValidationUnit, day : Int, count : Nat) {
-        var principal = getNodePrincipal(nv.nodeID);
-        switch (principal) {
+    private func nodeValidated(nv : NodeValidationUnit, day : Int, averagePower : Nat) {
+        var wallet = getNodePrincipal(nv.nodeID);
+        switch (wallet) {
             case (?p) {
                 switch (rewardPools.get(day)) {
                     case (?rewardPool) {
                         switch (rewardPool.get(p)) {
                             case (?record) {
                                 if (nv.nodeType == NodeComputing) {
-                                    record.computingPower := (record.computingPower * (count -1) + nv.power) / count;
+                                    record.computingPower += averagePower; 
                                 } else {
-                                    record.computingPower := 10000; //for validator and router, power set to 1(*10000)
+                                    record.computingPower += 10000; //for validator and router, power set to 1(*10000)
                                 };
+                                record.validatedTimes += 1;
                             };
                             case (_) {
                                 let rewardRecord : emcReward.RewardRecord = {
                                     account = p;
-                                    var computingPower = 0;
-                                    var stakingPower = 1;
-                                    var totalPower = 1;
+                                    var computingPower = averagePower;
+                                    var totalPower = 0;
+                                    var validatedTimes = 1;
                                     var rewardAmount = 0;
                                     var rewardDay = day;
                                     var distributed = 0;
@@ -255,9 +282,9 @@ shared (msg) actor class EmcNodeReward(
                     case (_) {
                         let rewardRecord : emcReward.RewardRecord = {
                             account = p;
-                            var computingPower = 0;
-                            var stakingPower = 1;
-                            var totalPower = 1;
+                            var computingPower = averagePower;
+                            var totalPower = 0;
+                            var validatedTimes = 1;
                             var rewardAmount = 0;
                             var rewardDay = day;
                             var distributed = 0;
@@ -290,8 +317,18 @@ shared (msg) actor class EmcNodeReward(
                                 //node validation by new validator
                                 nodeValidations.put(recordText, nv);
                                 if (nodeValidations.size() * 3 > validators.size() * 2) {
-                                    //node validation confirm here
-                                    nodeValidated(nv, day, nodeValidations.size());
+                                    if((nodeValidations.size()-1) * 3 <= validators.size() * 2){
+                                        //node validation confirm here with average computing power 
+                                        //base on first comping x validations
+                                        var averagePower : Nat = 0;
+                                        for(val in nodeValidations.vals()){
+                                            averagePower += val.power;
+                                        };
+                                        averagePower /= nodeValidations.size();
+                                        nodeValidated(nv, day, averagePower);    
+                                    }else{
+                                        //ignore the later coming y validations
+                                    };
                                 };
 
                                 return true;

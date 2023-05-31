@@ -21,7 +21,7 @@ module {
     public type RewardRecord = {
         account : Principal;
         var computingPower: Nat;
-        var stakingPower: Nat;
+        var validatedTimes: Nat;
         var rewardAmount: Nat;
         var totalPower: Nat;
         var rewardDay : Int;
