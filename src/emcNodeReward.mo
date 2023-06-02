@@ -112,7 +112,6 @@ shared (msg) actor class EmcNodeReward(
         return #Ok(0);
     };
 
-
     public shared (msg) func addValidator(_validator : Principal) : async emcResult {
         if (msg.caller != owner) {
             return #Err(#CallerNotAuthorized);
@@ -142,6 +141,17 @@ shared (msg) actor class EmcNodeReward(
     //validators
     public shared query (msg) func listValidators() : async [(Principal, Time.Time)] {
         Iter.toArray(validators.entries());
+    };
+
+    //validator nodes
+    public shared query (msg) func listValidatorNodes() : async [(Text, Node)] {
+        var validatorNodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
+        for(val in nodePool.vals()){
+            if(val.nodeType == NodeValidator){
+                validatorNodes.put(val.nodeID, val);
+            };
+        };
+        return Iter.toArray(validatorNodes.entries());
     };
 
     public query func isValidator(who : Principal) : async Bool {
@@ -268,7 +278,7 @@ shared (msg) actor class EmcNodeReward(
                                 if (nv.nodeType == NodeComputing) {
                                     record.computingPower += averagePower;
                                 } else {
-                                    record.computingPower += 10000; //for validator and router, power set to 1(*10000)
+                                    record.computingPower += 10000; //for validator and router, power set to 1
                                 };
                                 record.validatedTimes += 1;
                             };
@@ -282,6 +292,9 @@ shared (msg) actor class EmcNodeReward(
                                     var rewardAmount = 0;
                                     var rewardDay = day;
                                     var distributed = 0;
+                                };
+                                if (nv.nodeType != NodeComputing) {
+                                    rewardRecord.computingPower := 10000;//for validator and router, power set to 1
                                 };
                                 rewardPool.put(nv.nodeID, rewardRecord);
                             };
@@ -297,6 +310,10 @@ shared (msg) actor class EmcNodeReward(
                             var rewardAmount = 0;
                             var rewardDay = day;
                             var distributed = 0;
+                        };
+
+                        if (nv.nodeType != NodeComputing) {
+                            rewardRecord.computingPower := 10000;//for validator and router, power set to 1
                         };
                         let rewardPool = HashMap.HashMap<Text, emcReward.RewardRecord>(1, Text.equal, Text.hash);
                         rewardPool.put(nv.nodeID, rewardRecord);
@@ -601,11 +618,11 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared query (msg) func showTotalRewardsStatus(): async (Nat, Nat, Nat, Nat){
+    public shared query (msg) func showTotalRewardsStatus() : async (Nat, Nat, Nat, Nat) {
         (rewardPoolBalance, totalStaking, totalReward, totalDistributed);
     };
 
-    public shared (msg) func postDeposit(): async (Nat){
+    public shared (msg) func postDeposit() : async (Nat) {
         assert (msg.caller == owner);
         let emcBalance = await tokenCanister.balanceOf(Principal.fromActor(self));
         rewardPoolBalance := emcBalance - totalStaking;
@@ -628,7 +645,7 @@ shared (msg) actor class EmcNodeReward(
 
         //distribute rewards for yestoday
         let targetDay = today - 1;
-        let dayReward = emcReward.getDayReward(targetDay-startDay);
+        let dayReward = emcReward.getDayReward(targetDay -startDay);
         switch (rewardPools.get(targetDay)) {
             case (?rewardRecords) {
                 var totalPower : Nat = 0;
@@ -676,6 +693,28 @@ shared (msg) actor class EmcNodeReward(
                 //nothing to do
             };
         };
+    };
+
+    public shared query (msg) func tryTodayReward() : async [(Text, Nat)] {
+        //try rewards for today
+        let targetDay = Int.abs(Time.now() / dayNanos);
+        let dayReward = emcReward.getDayReward(targetDay -startDay);
+        var currentRD = HashMap.HashMap<Text, Nat>(1, Text.equal, Text.hash);
+        switch (rewardPools.get(targetDay)) {
+            case (?rewardRecords) {
+                var totalPower : Nat = 0;
+                for (val in rewardRecords.vals()) {
+                    totalPower += val.computingPower * getStakePower(val.nodeID);
+                };
+                for (val in rewardRecords.vals()) {
+                    currentRD.put(val.nodeID, dayReward * (val.computingPower * getStakePower(val.nodeID)) / totalPower);
+                };
+            };
+            case (_) {
+                //nothing to do
+            };
+        };
+        return Iter.toArray(currentRD.entries());
     };
 
     public shared (msg) func exeuteReward() : async emcResult {
