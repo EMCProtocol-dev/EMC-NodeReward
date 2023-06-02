@@ -99,11 +99,19 @@ shared (msg) actor class EmcNodeReward(
     private var failedRewardPool = HashMap.HashMap<Text, emcReward.FailedReward>(1, Text.equal, Text.hash);
     private var rewardStatus = HashMap.HashMap<Text, emcReward.RewardStatus>(1, Text.equal, Text.hash);
 
-    public shared (msg) func stopTestnet(stop : Bool) : async emcResult {
+    public shared (msg) func stopTestnet() : async emcResult {
         assert (msg.caller == owner);
-        testnetRunning := not stop;
+        testnetRunning := false;
         return #Ok(0);
     };
+
+    public shared (msg) func startTestnet() : async emcResult {
+        assert (msg.caller == owner);
+        testnetRunning := true;
+        startDay := Int.abs(Time.now() / dayNanos);
+        return #Ok(0);
+    };
+
 
     public shared (msg) func addValidator(_validator : Principal) : async emcResult {
         if (msg.caller != owner) {
@@ -620,7 +628,7 @@ shared (msg) actor class EmcNodeReward(
 
         //distribute rewards for yestoday
         let targetDay = today - 1;
-        let dayReward = emcReward.getDayReward(targetDay);
+        let dayReward = emcReward.getDayReward(targetDay-startDay);
         switch (rewardPools.get(targetDay)) {
             case (?rewardRecords) {
                 var totalPower : Nat = 0;
@@ -659,7 +667,10 @@ shared (msg) actor class EmcNodeReward(
                         };
                     };
                 };
+
+                //release data for targetday
                 rewardPools.delete(targetDay);
+                validationPools.delete(targetDay);
             };
             case (_) {
                 //nothing to do
@@ -667,7 +678,7 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared (msg) func exeuteReward(dayAjust : Nat) : async emcResult {
+    public shared (msg) func exeuteReward() : async emcResult {
         assert (msg.caller == owner);
         await distributeReward();
         return #Ok(0);
