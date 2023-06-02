@@ -56,7 +56,7 @@ shared (msg) actor class EmcNodeReward(
     private var owner : Principal = msg.caller;
 
     private stable var testnetRunning : Bool = true;
-    private stable var rewardBalance : Nat = 30_000_000_000_000_000;
+    private stable var rewardPoolBalance : Nat = 30_000_000_000_000_000;
     private stable var totalStaking : Nat = 0;
     private stable var totalReward : Nat = 0;
     private stable var totalDistributed : Nat = 0;
@@ -106,9 +106,9 @@ shared (msg) actor class EmcNodeReward(
     };
 
     public shared (msg) func addValidator(_validator : Principal) : async emcResult {
-        // if (msg.caller != owner) {
-        //     return #Err(#CallerNotAuthorized);
-        // };
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
 
         if (validators.get(_validator) != null) {
             return #Err(#NodeAlreadyExist);
@@ -121,9 +121,10 @@ shared (msg) actor class EmcNodeReward(
     };
 
     public shared (msg) func removeValidator(_validator : Principal) : async emcResult {
-        // if (msg.caller != owner) {
-        //     return #Err(#CallerNotAuthorized);
-        // };
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
+
         validators.delete(_validator);
 
         return #Ok(0);
@@ -171,15 +172,19 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    private func unregisterNode(caller : Principal, nodeID : Text) {
+    public shared (msg) func unregisterNode(nodeID : Text) : async emcResult {
         switch (nodePool.get(nodeID)) {
             case (?node) {
-                if (node.wallet == caller) {
+                if (node.owner == msg.caller) {
                     nodePool.delete(nodeID);
+                    return #Ok(0);
+                } else {
+                    return #Err(#CallerNotAuthorized);
                 };
             };
             case (_) {};
         };
+        return #Err(#NodeNotExist);
     };
 
     public shared query (msg) func myNode(nodeID : Text) : async [Node] {
@@ -404,15 +409,15 @@ shared (msg) actor class EmcNodeReward(
         assert (msg.caller == owner);
         let emcBalance = await tokenCanister.balanceOf(Principal.fromActor(self));
         var toWithdraw : Nat = 0;
-        if (rewardBalance + totalStaking <= emcBalance) {
-            toWithdraw := rewardBalance;
+        if (rewardPoolBalance + totalStaking <= emcBalance) {
+            toWithdraw := rewardPoolBalance;
         } else {
             toWithdraw := emcBalance - totalStaking;
         };
         let res = await tokenCanister.transfer(account, toWithdraw);
         switch (res) {
             case (#Ok(txnID)) {
-                rewardBalance := 0;
+                rewardPoolBalance := 0;
                 return toWithdraw;
             };
             case (#Err(#InsufficientBalance)) {
@@ -577,7 +582,7 @@ shared (msg) actor class EmcNodeReward(
         totalDistributed += newDistribution;
     };
 
-    public shared query (msg) func showRewardStatus(nodeID : Text) : async (Text, Nat, Nat) {
+    public shared query (msg) func showNodeRewardStatus(nodeID : Text) : async (Text, Nat, Nat) {
         switch (rewardStatus.get(nodeID)) {
             case (?record) {
                 return (nodeID, record.totalReward, record.distributed);
@@ -586,6 +591,17 @@ shared (msg) actor class EmcNodeReward(
                 return (nodeID, 0, 0);
             };
         };
+    };
+
+    public shared query (msg) func showTotalRewardsStatus(): async (Nat, Nat, Nat, Nat){
+        (rewardPoolBalance, totalStaking, totalReward, totalDistributed);
+    };
+
+    public shared (msg) func postDeposit(): async (Nat){
+        assert (msg.caller == owner);
+        let emcBalance = await tokenCanister.balanceOf(Principal.fromActor(self));
+        rewardPoolBalance := emcBalance - totalStaking;
+        return rewardPoolBalance;
     };
 
     public shared query (msg) func showFaildReward(start : Nat, limit : Nat) : async [(Text, emcReward.FailedReward)] {
@@ -618,7 +634,7 @@ shared (msg) actor class EmcNodeReward(
                     let result = await tokenCanister.transferFrom(Principal.fromActor(self), val.wallet, val.rewardAmount);
                     switch (result) {
                         case (#Ok(amount)) {
-                            rewardBalance -= val.rewardAmount;
+                            rewardPoolBalance -= val.rewardAmount;
                             val.distributed := Time.now();
                             updateRewardStatus(val.nodeID, val.wallet, 0, val.rewardAmount); //update distribution
                         };

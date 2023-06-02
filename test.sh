@@ -17,3 +17,8 @@ dfx canister call --network test emc_node_reward launchRewardTask
 dfx identity use emc-developer-eric
 dfx canister create --network ic emc_node_reward
 dfx deploy --network ic emc_node_reward --argument="(\"aeex5-aqaaa-aaaam-abm3q-cai\")" 
+
+#add validators
+dfx canister call --network test emc_node_reward addValidator "(principal \"\")"
+
+dfx canister call --network ic emc_node_reward launchRewardTask
