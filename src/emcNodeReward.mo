@@ -656,7 +656,7 @@ shared (msg) actor class EmcNodeReward(
                 for (val in rewardRecords.vals()) {
                     val.rewardAmount := dayReward * val.totalPower / totalPower;
                     updateRewardStatus(val.nodeID, val.wallet, val.rewardAmount, 0); //update reward
-                    let result = await tokenCanister.transferFrom(Principal.fromActor(self), val.wallet, val.rewardAmount);
+                    let result = await tokenCanister.transfer(val.wallet, val.rewardAmount);
                     switch (result) {
                         case (#Ok(amount)) {
                             rewardPoolBalance -= val.rewardAmount;
