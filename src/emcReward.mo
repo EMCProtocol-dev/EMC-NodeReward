@@ -13,8 +13,8 @@ import Int "mo:base/Int";
 import Float "mo:base/Float";
 
 module {
-    let testDayReward : Nat = 5_000_000_000_000;
-    let dayRewardBase : Nat = 72072_000_000_000_000_000;
+    let testDayReward : Nat =  5_000_000_000_000;
+    let dayRewardBase : Nat = 72_000_000_000_000;
     let testDays : Nat = 60;
     let stageLength : Nat = 90;
 
