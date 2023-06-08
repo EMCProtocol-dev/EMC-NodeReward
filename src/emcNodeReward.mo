@@ -57,7 +57,7 @@ shared (msg) actor class EmcNodeReward(
     private var owner : Principal = msg.caller;
 
     private stable var testnetRunning : Bool = true;
-    private stable var rewardPoolBalance : Nat = 30_000_000_000_000_000;
+    private stable var rewardPoolBalance : Nat = 300_000_000_000_000;
     private stable var totalStaking : Nat = 0;
     private stable var totalReward : Nat = 0;
     private stable var totalDistributed : Nat = 0;
@@ -251,13 +251,13 @@ shared (msg) actor class EmcNodeReward(
     };
 
     //return validated times and total computing power for current day
-    public shared query (msg) func myCurrentEPower(nodeID : Text) : async (Nat, Nat) {
+    public shared query (msg) func myCurrentEPower(nodeID : Text) : async (Nat, Float) {
         var today = Time.now() / dayNanos;
         switch (rewardPools.get(today)) {
             case (?rewardPool) {
                 switch (rewardPool.get(nodeID)) {
                     case (?record) {
-                        return (record.validatedTimes, record.computingPower);
+                        return (record.validatedTimes, Float.fromInt(record.computingPower)/10000);
                     };
                     case (_) {};
                 };
