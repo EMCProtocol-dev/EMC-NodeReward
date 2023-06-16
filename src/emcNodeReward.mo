@@ -227,9 +227,9 @@ shared (msg) actor class EmcNodeReward(
 
         var nodearray = Iter.toArray(nodes.entries());
 
-        assert (start <= nodePool.size());
-        if (start + limit > nodePool.size()) {
-            return Array.subArray<(Text, Node)>(nodearray, start, nodePool.size() -start);
+        assert (start <= nodes.size());
+        if (start + limit > nodes.size()) {
+            return Array.subArray<(Text, Node)>(nodearray, start, nodes.size() -start);
         } else {
             return Array.subArray<(Text, Node)>(nodearray, start, limit);
         };
