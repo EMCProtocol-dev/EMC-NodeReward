@@ -217,8 +217,15 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public query func listNodes(start : Nat, limit : Nat) : async [(Text, Node)] {
-        var nodearray = Iter.toArray(nodePool.entries());
+    public query func listNodes(nodeType : Nat, start : Nat, limit : Nat) : async [(Text, Node)] {
+        var nodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
+        for(val in nodePool.vals()){
+            if(val.nodeType == nodeType){
+                nodes.put(val.nodeID, val);
+            };
+        };
+
+        var nodearray = Iter.toArray(nodes.entries());
 
         assert (start <= nodePool.size());
         if (start + limit > nodePool.size()) {
@@ -276,10 +283,10 @@ shared (msg) actor class EmcNodeReward(
                     case (?rewardPool) {
                         switch (rewardPool.get(nv.nodeID)) {
                             case (?record) {
-                                if (nv.nodeType == NodeComputing) {
-                                    record.computingPower += averagePower;
+                                if (nv.nodeType == NodeValidator) {
+                                    record.computingPower += 10_000; //for validator power set to 1
                                 } else {
-                                    record.computingPower += 10_000; //for validator and router, power set to 1
+                                    record.computingPower += averagePower;
                                 };
                                 record.validatedTimes += 1;
                             };
@@ -294,8 +301,8 @@ shared (msg) actor class EmcNodeReward(
                                     var rewardDay = day;
                                     var distributed = 0;
                                 };
-                                if (nv.nodeType != NodeComputing) {
-                                    rewardRecord.computingPower := 10_000; //for validator and router, power set to 1
+                                if (nv.nodeType == NodeValidator) {
+                                    rewardRecord.computingPower := 10_000; //for validator power set to 1
                                 };
                                 rewardPool.put(nv.nodeID, rewardRecord);
                             };
@@ -313,8 +320,8 @@ shared (msg) actor class EmcNodeReward(
                             var distributed = 0;
                         };
 
-                        if (nv.nodeType != NodeComputing) {
-                            rewardRecord.computingPower := 10_000; //for validator and router, power set to 1
+                        if (nv.nodeType == NodeValidator) {
+                            rewardRecord.computingPower := 10_000; //for validator power set to 1
                         };
                         let rewardPool = HashMap.HashMap<Text, emcReward.RewardRecord>(1, Text.equal, Text.hash);
                         rewardPool.put(nv.nodeID, rewardRecord);
