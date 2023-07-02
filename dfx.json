@@ -2,7 +2,8 @@
   "canisters": {
     "emc_node_reward":{
       "main": "src/emcNodeReward.mo",
-      "type": "motoko"
+      "type": "motoko",
+      "args" : "--incremental-gc"
     }
   }
 }

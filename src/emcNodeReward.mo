@@ -624,7 +624,18 @@ shared (msg) actor class EmcNodeReward(
                 record.stakingPower;
             };
             case (_) {
-                10000;
+                switch (getNodeType(nodeID)) {
+                    case (?nodetype) {
+                        if(nodetype == NodeRouter or nodetype == NodeValidator){
+                            0;
+                        }else{
+                            10000;
+                        }
+                    };
+                    case (_){
+                        0;
+                    };
+                };
             };
         };
     };
