@@ -3,7 +3,7 @@
     "emc_node_reward":{
       "main": "src/emcNodeReward.mo",
       "type": "motoko",
-      "args" : "--generational-gc"
+      "args" : "--incremental-gc"
     }
   }
 }

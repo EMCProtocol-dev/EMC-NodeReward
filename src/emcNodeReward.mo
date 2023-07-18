@@ -147,8 +147,8 @@ shared (msg) actor class EmcNodeReward(
     //validator nodes
     public shared query (msg) func listValidatorNodes() : async [(Text, Node)] {
         var validatorNodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-        for(val in nodePool.vals()){
-            if(val.nodeType == NodeValidator){
+        for (val in nodePool.vals()) {
+            if (val.nodeType == NodeValidator) {
                 validatorNodes.put(val.nodeID, val);
             };
         };
@@ -219,8 +219,8 @@ shared (msg) actor class EmcNodeReward(
 
     public query func listNodes(nodeType : Nat, start : Nat, limit : Nat) : async [(Text, Node)] {
         var nodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-        for(val in nodePool.vals()){
-            if(val.nodeType == nodeType){
+        for (val in nodePool.vals()) {
+            if (val.nodeType == nodeType) {
                 nodes.put(val.nodeID, val);
             };
         };
@@ -264,7 +264,7 @@ shared (msg) actor class EmcNodeReward(
             case (?rewardPool) {
                 switch (rewardPool.get(nodeID)) {
                     case (?record) {
-                        return (record.validatedTimes, Float.fromInt(record.computingPower)/10000);
+                        return (record.validatedTimes, Float.fromInt(record.computingPower) / 10000);
                     };
                     case (_) {};
                 };
@@ -383,9 +383,11 @@ shared (msg) actor class EmcNodeReward(
                 if (addNew) {
                     let nodeValidations = HashMap.HashMap<Text, NodeValidationUnit>(1, Text.equal, Text.hash);
                     nodeValidations.put(recordText, nv);
+
                     let nvPool = HashMap.HashMap<Text, HashMap.HashMap<Text, NodeValidationUnit>>(1, Text.equal, Text.hash);
                     nvPool.put(nodeText, nodeValidations);
                     validationPools.put(day, nvPool);
+
                     return true;
                 };
             };
@@ -486,13 +488,12 @@ shared (msg) actor class EmcNodeReward(
                 case (?node) {
                     switch (calcStakingPower(node.nodeType, val.stakeDays, val.stakeAmount)) {
                         case (#Ok(p)) {
-                            if(val.stakingPower != p){
+                            if (val.stakingPower != p) {
                                 fixes += 1;
                                 val.stakingPower := p;
                             };
                         };
-                        case (others) {
-                        };
+                        case (others) {};
                     };
                 };
                 case (_) {};
@@ -512,7 +513,9 @@ shared (msg) actor class EmcNodeReward(
             power := stakeAmount * 100 * 10_000 / 1_000_000 / emcDecimals;
         } else if (nodeType == NodeRouter) {
             if (days < 180) { return #Err(#StakeTooShort) };
-            if (stakeAmount < 100_000 * emcDecimals) { return #Err(#StakeNotEnough) };
+            if (stakeAmount < 100_000 * emcDecimals) {
+                return #Err(#StakeNotEnough);
+            };
             power := stakeAmount * 10 * 10_000 / 100_000 / emcDecimals;
         } else {
             //here should check min staking amount for computing node, TBD
@@ -626,13 +629,13 @@ shared (msg) actor class EmcNodeReward(
             case (_) {
                 switch (getNodeType(nodeID)) {
                     case (?nodetype) {
-                        if(nodetype == NodeRouter or nodetype == NodeValidator){
+                        if (nodetype == NodeRouter or nodetype == NodeValidator) {
                             0;
-                        }else{
+                        } else {
                             10000;
-                        }
+                        };
                     };
-                    case (_){
+                    case (_) {
                         0;
                     };
                 };
@@ -673,6 +676,21 @@ shared (msg) actor class EmcNodeReward(
 
     public shared query (msg) func showTotalRewardsStatus() : async (Nat, Nat, Nat, Nat) {
         (rewardPoolBalance, totalStaking, totalReward, totalDistributed);
+    };
+
+    public shared query (msg) func getNodeStatus() : async (Nat, Nat) {
+        var pogCount : Nat = 0;
+        let today : Nat = Int.abs(Time.now() / dayNanos);
+        switch (rewardPools.get(today)) {
+            case (?rewardPool) {
+                pogCount := rewardPool.size();
+            };
+            case (_) {
+                pogCount := 0;
+            };
+        };
+
+        return (nodePool.size(), pogCount);
     };
 
     public shared (msg) func postDeposit() : async (Nat) {
