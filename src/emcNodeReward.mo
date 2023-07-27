@@ -26,6 +26,7 @@ import emcReward "emcReward";
 import Timer "mo:base/Timer";
 import Nat32 "mo:base/Nat32";
 import Bool "mo:base/Bool";
+import Trie "mo:base/Trie";
 
 shared (msg) actor class EmcNodeReward(
     token : Text
@@ -54,8 +55,10 @@ shared (msg) actor class EmcNodeReward(
     private var daySeconds : Nat = 3600 * 24;
     private var hourSeconds : Nat = 3600;
     private var emcDecimals : Nat = 100_000_000;
-    private var owner : Principal = msg.caller;
 
+    private stable var owner : Principal = msg.caller;
+
+    private stable var dayValidationRounds : Nat = 96;
     private stable var testnetRunning : Bool = true;
     private stable var rewardPoolBalance : Nat = 300_000_000_000_000;
     private stable var totalStaking : Nat = 0;
@@ -73,18 +76,33 @@ shared (msg) actor class EmcNodeReward(
     type NodeValidationUnit = emcNode.NodeValidationUnit;
     type NodeValidationPool = HashMap.HashMap<Text, HashMap.HashMap<Text, NodeValidationUnit>>;
 
+    private func account_key(t : Principal) : Trie.Key<Principal> = {
+        key = t;
+        hash = Principal.hash t;
+    };
+
+    private func text_key(t : Text) : Trie.Key<Text> = {
+        key = t;
+        hash = Text.hash t;
+    };
+
     private stable var nodeEntries : [(Text, Node)] = [];
     private stable var validatorEntries : [(Principal, Time.Time)] = [];
     private stable var validationPoolEntries : [(Int, [(Text, [(Text, NodeValidationUnit)])])] = [];
 
-    private var nodePool = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-    private var validators = HashMap.HashMap<Principal, Time.Time>(1, Principal.equal, Principal.hash);
+    private stable var computingNodes = Trie.empty<Text, Node>();
+    private stable var validatorNodes = Trie.empty<Text, Node>();
+    private stable var routerNodes = Trie.empty<Text, Node>();
+
+    private stable var validators = Trie.empty<Principal, Time.Time>();
+    private stable var routers = Trie.empty<Principal, Time.Time>();
+
     private var validationPools = TrieMap.TrieMap<Int, NodeValidationPool>(Int.equal, Int.hash);
 
     //node staking
     private var tokenCanister : emc_token_dip20.Token = actor (token);
     private stable var stakePoolEntires : [(Text, emcReward.StakeRecord)] = [];
-    private var stakePool = HashMap.HashMap<Text, emcReward.StakeRecord>(1, Text.equal, Text.hash);
+    private stable var stakePool = Trie.empty<Text, emcReward.StakeRecord>();
 
     //reward definations
     type NodeRewardRecordPool = HashMap.HashMap<Text, emcReward.RewardRecord>;
@@ -97,8 +115,8 @@ shared (msg) actor class EmcNodeReward(
     private stable var rewardStatusEntries : [(Text, emcReward.RewardStatus)] = [];
 
     private var rewardPools = TrieMap.TrieMap<Int, NodeRewardRecordPool>(Int.equal, Int.hash);
-    private var failedRewardPool = HashMap.HashMap<Text, emcReward.FailedReward>(1, Text.equal, Text.hash);
-    private var rewardStatus = HashMap.HashMap<Text, emcReward.RewardStatus>(1, Text.equal, Text.hash);
+    private stable var failedRewardPool = Trie.empty<Text, emcReward.FailedReward>();
+    private stable var rewardStatus = Trie.empty<Text, emcReward.RewardStatus>();
 
     public shared (msg) func stopTestnet() : async emcResult {
         assert (msg.caller == owner);
@@ -113,16 +131,20 @@ shared (msg) actor class EmcNodeReward(
         return #Ok(0);
     };
 
+    /**
+* validators
+**/
+
     public shared (msg) func addValidator(_validator : Principal) : async emcResult {
         if (msg.caller != owner) {
             return #Err(#CallerNotAuthorized);
         };
 
-        if (validators.get(_validator) != null) {
+        if (Trie.get(validators, account_key(_validator), Principal.equal) != null) {
             return #Err(#NodeAlreadyExist);
         };
 
-        validators.put(_validator, Time.now());
+        validators := Trie.put(validators, account_key(_validator), Principal.equal, Time.now()).0;
 
         return #Ok(0);
 
@@ -133,81 +155,260 @@ shared (msg) actor class EmcNodeReward(
             return #Err(#CallerNotAuthorized);
         };
 
-        validators.delete(_validator);
+        validators := Trie.remove(validators, account_key(_validator), Principal.equal).0;
 
         return #Ok(0);
 
     };
 
-    //validators
     public shared query (msg) func listValidators() : async [(Principal, Time.Time)] {
-        Iter.toArray(validators.entries());
+        Trie.toArray<Principal, Time.Time, (Principal, Time.Time)>(
+            validators,
+            func(k, v) = (k, v),
+        );
     };
 
-    //validator nodes
-    public shared query (msg) func listValidatorNodes() : async [(Text, Node)] {
-        var validatorNodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-        for (val in nodePool.vals()) {
-            if (val.nodeType == NodeValidator) {
-                validatorNodes.put(val.nodeID, val);
-            };
+    private func isValidator(who : Principal) : Bool {
+        if (Trie.get(validators, account_key(who), Principal.equal) != null) {
+            return true;
+        } else {
+            return false;
         };
-        return Iter.toArray(validatorNodes.entries());
     };
 
-    public query func isValidator(who : Principal) : async Bool {
-        return validators.get(who) != null;
+    public query func isValidatorPrincipal(who : Principal) : async Bool {
+        if (isValidator(who)) {
+            return true;
+        } else {
+            return false;
+        };
     };
 
-    //node management
-    public shared (msg) func registerNode(_nodetype : NodeType, _nodeID : Text, _wallet : Principal) : async emcResult {
-        switch (nodePool.get(_nodeID)) {
+    /**
+* routers
+**/
+    public shared (msg) func addRouter(_router : Principal) : async emcResult {
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
+
+        if (Trie.get(routers, account_key(_router), Principal.equal) != null) {
+            return #Err(#NodeAlreadyExist);
+        };
+
+        routers := Trie.put(routers, account_key(_router), Principal.equal, Time.now()).0;
+
+        return #Ok(0);
+
+    };
+
+    public shared (msg) func removeRouter(_router : Principal) : async emcResult {
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
+
+        routers := Trie.remove(routers, account_key(_router), Principal.equal).0;
+
+        return #Ok(0);
+
+    };
+
+    public shared query (msg) func listRouters() : async [(Principal, Time.Time)] {
+        Trie.toArray<Principal, Time.Time, (Principal, Time.Time)>(
+            routers,
+            func(k, v) = (k, v),
+        );
+    };
+
+    public query func isRouter(who : Principal) : async Bool {
+        if (Trie.get(routers, account_key(who), Principal.equal) != null) {
+            return true;
+        } else {
+            return false;
+        };
+    };
+
+    /**
+* Nodes
+**/
+
+    public shared (msg) func registerValidatorNode(_nodeID : Text, _wallet : Principal) : async emcResult {
+        if (Trie.get(validators, account_key(msg.caller), Principal.equal) == null) {
+            return #Err(#CallerNotAuthorized);
+        };
+
+        if (Trie.get(validatorNodes, text_key(_nodeID), Text.equal) != null) {
+            return #Err(#NodeAlreadyExist);
+        };
+
+        let tmp : Node = {
+            nodeType = NodeValidator;
+            nodeID = _nodeID;
+            owner = msg.caller;
+            wallet = _wallet;
+            registered = Time.now();
+        };
+        validatorNodes := Trie.put(validatorNodes, text_key(_nodeID), Text.equal, tmp).0;
+        return #Ok(0);
+    };
+
+    public shared (msg) func unregisterValidatorNode(_nodeID : Text) : async emcResult {
+        switch (Trie.get(validatorNodes, text_key(_nodeID), Text.equal)) {
             case (?node) {
-                return #Err(#NodeAlreadyExist);
+                if (node.owner != msg.caller) {
+                    return #Err(#CallerNotAuthorized);
+                } else {
+                    validatorNodes := Trie.remove(validatorNodes, text_key(_nodeID), Text.equal).0;
+                    return #Ok(0);
+                };
             };
             case (_) {
-                if (_nodetype == NodeValidator) {
-                    if (validators.get(msg.caller) == null) {
-                        return #Err(#NotAValidator);
-                    };
-                };
-
-                if (
-                    _nodetype != NodeValidator and _nodetype != NodeRouter and _nodetype != NodeComputing
-                ) {
-                    return #Err(#UnknowType);
-                };
-
-                let tmp : Node = {
-                    nodeType = _nodetype;
-                    nodeID = _nodeID;
-                    owner = msg.caller;
-                    wallet = _wallet;
-                    registered = Time.now();
-                };
-                nodePool.put(_nodeID, tmp);
-                return #Ok(0);
+                return #Err(#NodeNotExist);
             };
         };
     };
 
-    public shared (msg) func unregisterNode(nodeID : Text) : async emcResult {
-        switch (nodePool.get(nodeID)) {
+    public shared query (msg) func listValidatorNodes() : async [Node] {
+        Trie.toArray<Text, Node, Node>(
+            validatorNodes,
+            func(k, v) = v,
+        );
+    };
+
+    private func isValidatorNode(_nodeID : Text) : Bool {
+        if (Trie.get(validatorNodes, text_key(_nodeID), Text.equal) != null) {
+            return true;
+        } else {
+            return false;
+        };
+    };
+
+    public shared (msg) func registerRouterNode(_nodeID : Text, _wallet : Principal) : async emcResult {
+        if (Trie.get(routers, account_key(msg.caller), Principal.equal) == null) {
+            return #Err(#CallerNotAuthorized);
+        };
+
+        if (Trie.get(routerNodes, text_key(_nodeID), Text.equal) != null) {
+            return #Err(#NodeAlreadyExist);
+        };
+
+        let tmp : Node = {
+            nodeType = NodeRouter;
+            nodeID = _nodeID;
+            owner = msg.caller;
+            wallet = _wallet;
+            registered = Time.now();
+        };
+        routerNodes := Trie.put(routerNodes, text_key(_nodeID), Text.equal, tmp).0;
+        return #Ok(0);
+    };
+
+    public shared (msg) func unregisterRouterNode(_nodeID : Text) : async emcResult {
+        switch (Trie.get(routerNodes, text_key(_nodeID), Text.equal)) {
             case (?node) {
-                if (node.owner == msg.caller) {
-                    nodePool.delete(nodeID);
-                    return #Ok(0);
-                } else {
+                if (node.owner != msg.caller) {
                     return #Err(#CallerNotAuthorized);
+                } else {
+                    routerNodes := Trie.remove(routerNodes, text_key(_nodeID), Text.equal).0;
+                    return #Ok(0);
                 };
             };
-            case (_) {};
+            case (_) {
+                return #Err(#NodeNotExist);
+            };
         };
-        return #Err(#NodeNotExist);
     };
 
-    public shared query (msg) func myNode(nodeID : Text) : async [Node] {
-        switch (nodePool.get(nodeID)) {
+    public shared query (msg) func listRouterNodes() : async [Node] {
+        Trie.toArray<Text, Node, Node>(
+            routerNodes,
+            func(k, v) = v,
+        );
+    };
+
+    private func isRouterNode(_nodeID : Text) : Bool {
+        if (Trie.get(routerNodes, text_key(_nodeID), Text.equal) != null) {
+            return true;
+        } else {
+            return false;
+        };
+    };
+
+    public shared (msg) func registerComputingNode(_nodeID : Text, _wallet : Principal) : async emcResult {
+        if (Trie.get(computingNodes, text_key(_nodeID), Text.equal) != null) {
+            return #Err(#NodeAlreadyExist);
+        };
+
+        let tmp : Node = {
+            nodeType = NodeComputing;
+            nodeID = _nodeID;
+            owner = msg.caller;
+            wallet = _wallet;
+            registered = Time.now();
+        };
+        computingNodes := Trie.put(computingNodes, text_key(_nodeID), Text.equal, tmp).0;
+        return #Ok(0);
+    };
+
+    public shared (msg) func unregisterComputingNode(_nodeID : Text) : async emcResult {
+        switch (Trie.get(computingNodes, text_key(_nodeID), Text.equal)) {
+            case (?node) {
+                if (node.owner != msg.caller) {
+                    return #Err(#CallerNotAuthorized);
+                } else {
+                    computingNodes := Trie.remove(computingNodes, text_key(_nodeID), Text.equal).0;
+                    return #Ok(0);
+                };
+            };
+            case (_) {
+                return #Err(#NodeNotExist);
+            };
+        };
+    };
+
+    public shared query (msg) func listComputingNodes(start : Nat, length : Nat) : async [Node] {
+        let array = Trie.toArray<Text, Node, Node>(
+            computingNodes,
+            func(k, v) = v,
+        );
+        if (start >= Array.size(array)) {
+            return [];
+        } else if (start + length > Array.size(array)) {
+            return Array.subArray(array, start, Array.size(array) - start);
+        } else {
+            return Array.subArray(array, start, length);
+        };
+    };
+
+    private func isComputingNode(_nodeID : Text) : Bool {
+        if (Trie.get(computingNodes, text_key(_nodeID), Text.equal) != null) {
+            return true;
+        } else {
+            return false;
+        };
+    };
+
+    private func getNodeByID(_nodeID : Text) : ?Node {
+        var node = Trie.get(computingNodes, text_key(_nodeID), Text.equal);
+        if (node != null) {
+            return node;
+        };
+
+        node := Trie.get(validatorNodes, text_key(_nodeID), Text.equal);
+        if (node != null) {
+            return node;
+        };
+
+        node := Trie.get(routerNodes, text_key(_nodeID), Text.equal);
+        if (node != null) {
+            return node;
+        };
+
+        return null;
+    };
+
+    public shared query (msg) func myNode(_nodeID : Text) : async [Node] {
+        switch (getNodeByID(_nodeID)) {
             case (?node) {
                 return [node];
             };
@@ -217,28 +418,10 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public query func listNodes(nodeType : Nat, start : Nat, limit : Nat) : async [(Text, Node)] {
-        var nodes = HashMap.HashMap<Text, Node>(1, Text.equal, Text.hash);
-        for (val in nodePool.vals()) {
-            if (val.nodeType == nodeType) {
-                nodes.put(val.nodeID, val);
-            };
-        };
-
-        var nodearray = Iter.toArray(nodes.entries());
-
-        assert (start <= nodes.size());
-        if (start + limit > nodes.size()) {
-            return Array.subArray<(Text, Node)>(nodearray, start, nodes.size() -start);
-        } else {
-            return Array.subArray<(Text, Node)>(nodearray, start, limit);
-        };
-    };
-
-    private func getNodePrincipal(nodeID : Text) : ?Principal {
-        switch (nodePool.get(nodeID)) {
-            case (?n) {
-                return ?n.wallet;
+    private func getNodePrincipal(_nodeID : Text) : ?Principal {
+        switch (Trie.get(computingNodes, text_key(_nodeID), Text.equal)) {
+            case (?node) {
+                return ?node.wallet;
             };
             case (_) {
                 return null;
@@ -246,27 +429,50 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    private func getNodeType(nodeID : Text) : ?Nat {
-        switch (nodePool.get(nodeID)) {
-            case (?n) {
-                return ?n.nodeType;
-            };
-            case (_) {
-                return null;
-            };
+    private func getNodeType(_nodeID : Text) : ?Nat {
+        if (Trie.get(computingNodes, text_key(_nodeID), Text.equal) != null) {
+            return ?NodeComputing;
         };
+
+        if (Trie.get(routerNodes, text_key(_nodeID), Text.equal) != null) {
+            return ?NodeRouter;
+        };
+
+        if (Trie.get(validatorNodes, text_key(_nodeID), Text.equal) != null) {
+            return ?NodeValidator;
+        };
+
+        return null;
+    };
+
+    // for routers and validators who do not need do pog,
+    //here simulate the epower for them by percentage passed during the day.
+    private func simulateEPower(day_percent : Nat) : Nat {
+        10000 * dayValidationRounds * day_percent / 100;
+    };
+
+    public shared (msg) func updateDayValidaionRounds(rounds : Nat) : async emcResult {
+        dayValidationRounds := rounds;
+        return #Ok(0);
     };
 
     //return validated times and total computing power for current day
-    public shared query (msg) func myCurrentEPower(nodeID : Text) : async (Nat, Float) {
+    public shared query (msg) func myCurrentEPower(_nodeID : Text) : async (Nat, Float) {
         var today = Time.now() / dayNanos;
+
+        if (isValidatorNode(_nodeID) or isRouterNode(_nodeID)) {
+            return (0, Float.fromInt(simulateEPower(Int.abs((Time.now() - today * dayNanos) * 100 / dayNanos))) / 10000);
+        };
+
         switch (rewardPools.get(today)) {
             case (?rewardPool) {
-                switch (rewardPool.get(nodeID)) {
+                switch (rewardPool.get(_nodeID)) {
                     case (?record) {
                         return (record.validatedTimes, Float.fromInt(record.computingPower) / 10000);
                     };
-                    case (_) {};
+                    case (_) {
+
+                    };
                 };
             };
             case (_) {};
@@ -283,11 +489,7 @@ shared (msg) actor class EmcNodeReward(
                     case (?rewardPool) {
                         switch (rewardPool.get(nv.nodeID)) {
                             case (?record) {
-                                if (nv.nodeType == NodeValidator) {
-                                    record.computingPower += 10_000; //for validator power set to 1
-                                } else {
-                                    record.computingPower += averagePower;
-                                };
+                                record.computingPower += averagePower;
                                 record.validatedTimes += 1;
                             };
                             case (_) {
@@ -300,9 +502,6 @@ shared (msg) actor class EmcNodeReward(
                                     var rewardAmount = 0;
                                     var rewardDay = day;
                                     var distributed = 0;
-                                };
-                                if (nv.nodeType == NodeValidator) {
-                                    rewardRecord.computingPower := 10_000; //for validator power set to 1
                                 };
                                 rewardPool.put(nv.nodeID, rewardRecord);
                             };
@@ -320,9 +519,6 @@ shared (msg) actor class EmcNodeReward(
                             var distributed = 0;
                         };
 
-                        if (nv.nodeType == NodeValidator) {
-                            rewardRecord.computingPower := 10_000; //for validator power set to 1
-                        };
                         let rewardPool = HashMap.HashMap<Text, emcReward.RewardRecord>(1, Text.equal, Text.hash);
                         rewardPool.put(nv.nodeID, rewardRecord);
                         rewardPools.put(day, rewardPool);
@@ -350,8 +546,8 @@ shared (msg) actor class EmcNodeReward(
                             case (_) {
                                 //node validation by new validator
                                 nodeValidations.put(recordText, nv);
-                                if (nodeValidations.size() * 3 > validators.size() * 2) {
-                                    if ((nodeValidations.size() -1) * 3 <= validators.size() * 2) {
+                                if (nodeValidations.size() * 3 > Trie.size(validators) * 2) {
+                                    if ((nodeValidations.size() -1) * 3 <= Trie.size(validators) * 2) {
                                         //node validation confirm here with average computing power
                                         //base on first comping x validations
                                         var averagePower : Nat = 0;
@@ -395,8 +591,8 @@ shared (msg) actor class EmcNodeReward(
         return false;
     };
 
-    public shared (msg) func submitValidation(_validations : [NodeValidationRequest]) : async emcResult {
-        if (validators.get(msg.caller) == null) {
+    public shared (msg) func submitComputingValidation(_validations : [NodeValidationRequest]) : async emcResult {
+        if (isValidator(msg.caller) == false) {
             return #Err(#NotAValidator);
         };
 
@@ -404,30 +600,24 @@ shared (msg) actor class EmcNodeReward(
         var today = Time.now() / dayNanos;
 
         for (val in _validations.vals()) {
-            switch (getNodeType(val.targetNodeID)) {
-                case (?nodetype) {
-                    // new validation unit
-                    let unit : NodeValidationUnit = {
-                        nodeID = val.targetNodeID;
-                        nodeType = nodetype;
-                        validator = val.validator;
-                        validationTicket = val.validationTicket;
-                        power = 15_000 * 10_000 / val.power; //X10_000 to avoid using float type
-                        validationDay = today;
-                    };
-
-                    //check yestoday
-                    if (addNewNodeValidation(unit, today -1, false)) {
-                        confirmed += 1;
-                    } else {
-                        if (addNewNodeValidation(unit, today, true)) {
-                            confirmed += 1;
-                        } else {};
-                    };
-
+            if (isComputingNode(val.targetNodeID)) {
+                // new validation unit
+                let unit : NodeValidationUnit = {
+                    nodeID = val.targetNodeID;
+                    nodeType = NodeComputing;
+                    validator = val.validator;
+                    validationTicket = val.validationTicket;
+                    power = 15_000 * 10_000 / val.power; //X10_000 to avoid using float type
+                    validationDay = today;
                 };
-                case (_) {
 
+                //check yestoday
+                if (addNewNodeValidation(unit, today -1, false)) {
+                    confirmed += 1;
+                } else {
+                    if (addNewNodeValidation(unit, today, true)) {
+                        confirmed += 1;
+                    } else {};
                 };
             };
 
@@ -477,30 +667,31 @@ shared (msg) actor class EmcNodeReward(
         emcReward.getDayReward(age);
     };
 
-    public shared (msg) func recalcStakingPower() : async emcResult {
-        if (msg.caller != owner) {
-            return #Err(#CallerNotAuthorized);
-        };
+    // ***temporary function will be deleted next update***
+    // public shared (msg) func recalcStakingPower() : async emcResult {
+    //     if (msg.caller != owner) {
+    //         return #Err(#CallerNotAuthorized);
+    //     };
 
-        var fixes : Nat = 0;
-        for (val in stakePool.vals()) {
-            switch (nodePool.get(val.nodeID)) {
-                case (?node) {
-                    switch (calcStakingPower(node.nodeType, val.stakeDays, val.stakeAmount)) {
-                        case (#Ok(p)) {
-                            if (val.stakingPower != p) {
-                                fixes += 1;
-                                val.stakingPower := p;
-                            };
-                        };
-                        case (others) {};
-                    };
-                };
-                case (_) {};
-            };
-        };
-        return #Ok(fixes);
-    };
+    //     var fixes : Nat = 0;
+    //     for (val in stakePool.vals()) {
+    //         switch (computingNodes.get(val.nodeID)) {
+    //             case (?node) {
+    //                 switch (calcStakingPower(node.nodeType, val.stakeDays, val.stakeAmount)) {
+    //                     case (#Ok(p)) {
+    //                         if (val.stakingPower != p) {
+    //                             fixes += 1;
+    //                             val.stakingPower := p;
+    //                         };
+    //                     };
+    //                     case (others) {};
+    //                 };
+    //             };
+    //             case (_) {};
+    //         };
+    //     };
+    //     return #Ok(fixes);
+    // };
 
     //Staking power 10000 times than defined in white paper to avoid float type using.
     private func calcStakingPower(nodeType : Nat, days : Nat, stakeAmount : Nat) : emcResult {
@@ -531,8 +722,8 @@ shared (msg) actor class EmcNodeReward(
         return #Ok(power);
     };
 
-    public shared (msg) func stake(emcAmount : Nat, days : Nat, nodeID : Text) : async emcResult {
-        switch (nodePool.get(nodeID)) {
+    public shared (msg) func stake(emcAmount : Nat, days : Nat, _nodeID : Text) : async emcResult {
+        switch (getNodeByID(_nodeID)) {
             case (?node) {
                 var power : Nat = 0;
                 switch (calcStakingPower(node.nodeType, days, emcAmount)) {
@@ -543,7 +734,7 @@ shared (msg) actor class EmcNodeReward(
                         return others;
                     };
                 };
-                switch (stakePool.get(nodeID)) {
+                switch (Trie.find(stakePool, text_key(_nodeID), Text.equal)) {
                     case (?stakeRecord) {
                         return #Err(#StakedBefore);
                     };
@@ -558,10 +749,10 @@ shared (msg) actor class EmcNodeReward(
                                     stakeTime = Time.now();
                                     var balance = emcAmount;
                                     nodeWallet = node.wallet;
-                                    nodeID = nodeID;
+                                    nodeID = _nodeID;
                                     var stakingPower = power;
                                 };
-                                stakePool.put(nodeID, stakeRecord);
+                                stakePool := Trie.put(stakePool, text_key(_nodeID), Text.equal, stakeRecord).0;
                                 totalStaking += emcAmount;
                                 return #Ok(amount);
                             };
@@ -580,8 +771,8 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared (msg) func unStake(nodeID : Text) : async emcResult {
-        switch (stakePool.get(nodeID)) {
+    public shared (msg) func unStake(_nodeID : Text) : async emcResult {
+        switch (Trie.find(stakePool, text_key(_nodeID), Text.equal)) {
             case (?stakeRecord) {
                 if (stakeRecord.staker == msg.caller) {
                     if (testnetRunning and stakeRecord.stakeTime + stakeRecord.stakeDays * dayNanos < Time.now()) {
@@ -594,7 +785,7 @@ shared (msg) actor class EmcNodeReward(
                             stakeRecord.balance := 0;
                             stakeRecord.stakingPower := 10000;
                             totalStaking -= stakeRecord.stakeAmount;
-                            stakePool.delete(nodeID);
+                            stakePool := Trie.remove(stakePool, text_key(_nodeID), Text.equal).0;
                             return #Ok(stakeRecord.stakeAmount);
                         };
                         case (others) {
@@ -611,8 +802,8 @@ shared (msg) actor class EmcNodeReward(
         };
     };
 
-    public shared query (msg) func myStake(nodeID : Text) : async (Nat, Nat, Nat) {
-        switch (stakePool.get(nodeID)) {
+    public shared query (msg) func myStake(_nodeID : Text) : async (Nat, Nat, Nat) {
+        switch (Trie.find(stakePool, text_key(_nodeID), Text.equal)) {
             case (?stake) {
                 return (stake.stakeAmount, stake.stakeDays, stake.stakingPower);
             };
@@ -621,13 +812,13 @@ shared (msg) actor class EmcNodeReward(
         (0, 0, 10000);
     };
 
-    private func getStakePower(nodeID : Text) : Nat {
-        switch (stakePool.get(nodeID)) {
+    private func getStakePower(_nodeID : Text) : Nat {
+        switch (Trie.find(stakePool, text_key(_nodeID), Text.equal)) {
             case (?record) {
                 record.stakingPower;
             };
             case (_) {
-                switch (getNodeType(nodeID)) {
+                switch (getNodeType(_nodeID)) {
                     case (?nodetype) {
                         if (nodetype == NodeRouter or nodetype == NodeValidator) {
                             0;
@@ -644,7 +835,7 @@ shared (msg) actor class EmcNodeReward(
     };
 
     private func updateRewardStatus(_nodeID : Text, _wallet : Principal, newReward : Nat, newDistribution : Nat) : () {
-        switch (rewardStatus.get(_nodeID)) {
+        switch (Trie.find(rewardStatus, text_key(_nodeID), Text.equal)) {
             case (?record) {
                 record.totalReward += newReward;
                 record.distributed += newDistribution;
@@ -656,29 +847,31 @@ shared (msg) actor class EmcNodeReward(
                     var totalReward = newReward;
                     var distributed = newDistribution;
                 };
-                rewardStatus.put(_nodeID, record);
+                rewardStatus := Trie.put(rewardStatus, text_key(_nodeID), Text.equal, record).0;
             };
         };
         totalReward += newReward;
         totalDistributed += newDistribution;
     };
 
-    public shared query (msg) func showNodeRewardStatus(nodeID : Text) : async (Text, Nat, Nat) {
-        switch (rewardStatus.get(nodeID)) {
+    public shared query (msg) func showNodeRewardStatus(_nodeID : Text) : async (Text, Nat, Nat) {
+        switch (Trie.find(rewardStatus, text_key(_nodeID), Text.equal)) {
             case (?record) {
-                return (nodeID, record.totalReward, record.distributed);
+                return (_nodeID, record.totalReward, record.distributed);
             };
             case (_) {
-                return (nodeID, 0, 0);
+                return (_nodeID, 0, 0);
             };
         };
     };
 
+    // return balance of reward pool, total staking amount, total caculated reward, total distributed reward.
     public shared query (msg) func showTotalRewardsStatus() : async (Nat, Nat, Nat, Nat) {
         (rewardPoolBalance, totalStaking, totalReward, totalDistributed);
     };
 
-    public shared query (msg) func getNodeStatus() : async (Nat, Nat) {
+    // return count of router nodes, validator nodes, computing nodes and pog succeed nodes;
+    public shared query (msg) func getNodeStatus() : async (Nat, Nat, Nat, Nat) {
         var pogCount : Nat = 0;
         let today : Nat = Int.abs(Time.now() / dayNanos);
         switch (rewardPools.get(today)) {
@@ -690,7 +883,7 @@ shared (msg) actor class EmcNodeReward(
             };
         };
 
-        return (nodePool.size(), pogCount);
+        return (Trie.size(routerNodes), Trie.size(validatorNodes), Trie.size(computingNodes), pogCount);
     };
 
     public shared (msg) func postDeposit() : async (Nat) {
@@ -700,14 +893,18 @@ shared (msg) actor class EmcNodeReward(
         return rewardPoolBalance;
     };
 
-    public shared query (msg) func showFaildReward(start : Nat, limit : Nat) : async [(Text, emcReward.FailedReward)] {
-        var recordArray = Iter.toArray(failedRewardPool.entries());
+    public shared query (msg) func showFaildReward(start : Nat, length : Nat) : async [emcReward.FailedReward] {
+        let array = Trie.toArray<Text, emcReward.FailedReward, emcReward.FailedReward>(
+            failedRewardPool,
+            func(k, v) = v,
+        );
 
-        assert (start <= failedRewardPool.size());
-        if (start + limit > failedRewardPool.size()) {
-            return Array.subArray<(Text, emcReward.FailedReward)>(recordArray, start, failedRewardPool.size() -start);
+        if (start >= Array.size(array)) {
+            return [];
+        } else if (start + length > Array.size(array)) {
+            return Array.subArray(array, start, Array.size(array) - start);
         } else {
-            return Array.subArray<(Text, emcReward.FailedReward)>(recordArray, start, limit);
+            return Array.subArray(array, start, length);
         };
     };
 
@@ -724,6 +921,47 @@ shared (msg) actor class EmcNodeReward(
                     val.totalPower := val.computingPower * getStakePower(val.nodeID);
                     totalPower += val.totalPower;
                 };
+
+                //whole day EPower
+                var simulatedEPower = simulateEPower(100);
+
+                //addup routers
+                let router_iter = Trie.iter(routerNodes);
+                for ((k, v) in router_iter) {
+                    let rewardRecord : emcReward.RewardRecord = {
+                        nodeID = v.nodeID;
+                        wallet = v.wallet;
+                        var computingPower = simulatedEPower;
+                        var totalPower = simulatedEPower * getStakePower(v.nodeID);
+                        var validatedTimes = 0;
+                        var rewardAmount = 0;
+                        var rewardDay = targetDay;
+                        var distributed = 0;
+                    };
+                    rewardRecords.put(v.nodeID, rewardRecord);
+
+                    totalPower += rewardRecord.totalPower;
+                };
+
+                //addup validators
+                let validator_iter = Trie.iter(validatorNodes);
+                for ((k, v) in validator_iter) {
+                    let rewardRecord : emcReward.RewardRecord = {
+                        nodeID = v.nodeID;
+                        wallet = v.wallet;
+                        var computingPower = simulatedEPower;
+                        var totalPower = simulatedEPower * getStakePower(v.nodeID);
+                        var validatedTimes = 0;
+                        var rewardAmount = 0;
+                        var rewardDay = targetDay;
+                        var distributed = 0;
+                    };
+                    rewardRecords.put(v.nodeID, rewardRecord);
+
+                    totalPower += rewardRecord.totalPower;
+                };
+
+                //send reward to computing ndoes
                 for (val in rewardRecords.vals()) {
                     val.rewardAmount := dayReward * val.totalPower / totalPower;
                     updateRewardStatus(val.nodeID, val.wallet, val.rewardAmount, 0); //update reward
@@ -738,8 +976,10 @@ shared (msg) actor class EmcNodeReward(
                             val.distributed := 0;
                             var key = val.nodeID # "-" # Nat.toText(targetDay);
 
-                            failedRewardPool.put(
-                                key,
+                            failedRewardPool := Trie.put(
+                                failedRewardPool,
+                                text_key(key),
+                                Text.equal,
                                 {
                                     nodeID = val.nodeID;
                                     wallet = val.wallet;
@@ -751,7 +991,7 @@ shared (msg) actor class EmcNodeReward(
                                     dayPower = totalPower;
                                     faildTime = Time.now();
                                 },
-                            );
+                            ).0;
                         };
                     };
                 };
@@ -774,11 +1014,31 @@ shared (msg) actor class EmcNodeReward(
         switch (rewardPools.get(targetDay)) {
             case (?rewardRecords) {
                 var totalPower : Nat = 0;
+                var simulatedEPower = simulateEPower(Int.abs((Time.now() - targetDay * dayNanos) * 100 / dayNanos));
+
                 for (val in rewardRecords.vals()) {
                     totalPower += val.computingPower * getStakePower(val.nodeID);
                 };
+                //addup routers
+                let router_iter = Trie.iter(routerNodes);
+                for ((k, v) in router_iter) {
+                    totalPower += simulatedEPower * getStakePower(v.nodeID);
+                };
+
+                //addup validators
+                let validator_iter = Trie.iter(validatorNodes);
+                for ((k, v) in validator_iter) {
+                    totalPower += simulatedEPower * getStakePower(v.nodeID);
+                };
+
                 for (val in rewardRecords.vals()) {
                     currentRD.put(val.nodeID, dayReward * (val.computingPower * getStakePower(val.nodeID)) / totalPower);
+                };
+                for ((k, v) in router_iter) {
+                    currentRD.put(v.nodeID, dayReward * simulatedEPower * getStakePower(v.nodeID) / totalPower);
+                };
+                for ((k, v) in validator_iter) {
+                    currentRD.put(v.nodeID, dayReward * simulatedEPower * getStakePower(v.nodeID) / totalPower);
                 };
             };
             case (_) {
@@ -817,23 +1077,48 @@ shared (msg) actor class EmcNodeReward(
     /*
     * upgrade functions
     */
-    system func preupgrade() {
-        nodeEntries := Iter.toArray(nodePool.entries());
-        validatorEntries := Iter.toArray(validators.entries());
 
-        rewardStatusEntries := Iter.toArray(rewardStatus.entries());
-        failedRewardEntries := Iter.toArray(failedRewardPool.entries());
-        stakePoolEntires := Iter.toArray(stakePool.entries());
+    //changed to use stable vars, next upgrade won't need these
+    system func preupgrade() {
+        // nodeEntries := Iter.toArray(nodePool.entries());
+        // validatorEntries := Iter.toArray(validators.entries());
+
+        // rewardStatusEntries := Iter.toArray(rewardStatus.entries());
+        // failedRewardEntries := Iter.toArray(failedRewardPool.entries());
+        // stakePoolEntires := Iter.toArray(stakePool.entries());
     };
 
+    // changed to use stable vars, should only be executed one time, delete them all after upgrade
     system func postupgrade() {
-        nodePool := HashMap.fromIter<Text, Node>(nodeEntries.vals(), 1, Text.equal, Text.hash);
+        for((k, v) in nodeEntries.vals()){
+            if(v.nodeType == NodeRouter){
+                routerNodes := Trie.put(routerNodes, text_key(k), Text.equal, v).0;
+            }else if(v.nodeType == NodeValidator){
+                validatorNodes := Trie.put(validatorNodes, text_key(k), Text.equal, v).0;
+            }else if(v.nodeType == NodeComputing){
+                computingNodes := Trie.put(computingNodes, text_key(k), Text.equal, v).0;
+            }
+        };
         nodeEntries := [];
-        validators := HashMap.fromIter<Principal, Time.Time>(validatorEntries.vals(), 1, Principal.equal, Principal.hash);
+
+        for((k, v) in validatorEntries.vals()){
+            validators := Trie.put(validators, account_key(k), Principal.equal, v).0;
+        };
         validatorEntries := [];
 
-        rewardStatus := HashMap.fromIter<Text, emcReward.RewardStatus>(rewardStatusEntries.vals(), 1, Text.equal, Text.hash);
-        failedRewardPool := HashMap.fromIter<Text, emcReward.FailedReward>(failedRewardEntries.vals(), 1, Text.equal, Text.hash);
-        stakePool := HashMap.fromIter<Text, emcReward.StakeRecord>(stakePoolEntires.vals(), 1, Text.equal, Text.hash);
+        for((k, v) in rewardStatusEntries.vals()){
+            rewardStatus := Trie.put(rewardStatus, text_key(k), Text.equal, v).0;
+        };
+        rewardStatusEntries := [];
+
+        for((k, v) in stakePoolEntires.vals()){
+            stakePool := Trie.put(stakePool, text_key(k), Text.equal, v).0;
+        };
+        stakePoolEntires := [];
+
+        for((k, v) in failedRewardEntries.vals()){
+            failedRewardPool := Trie.put(failedRewardPool, text_key(k), Text.equal, v).0;
+        };
+        failedRewardEntries := [];
     };
 };
