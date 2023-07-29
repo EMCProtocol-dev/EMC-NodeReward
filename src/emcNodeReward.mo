@@ -605,7 +605,7 @@ shared (msg) actor class EmcNodeReward(
                 let unit : NodeValidationUnit = {
                     nodeID = val.targetNodeID;
                     nodeType = NodeComputing;
-                    validator = val.validator;
+                    validator = msg.caller;//use caller to avoid fake/wrong validator
                     validationTicket = val.validationTicket;
                     power = 15_000 * 10_000 / val.power; //X10_000 to avoid using float type
                     validationDay = today;

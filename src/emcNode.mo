@@ -29,7 +29,7 @@ module {
 
     public type NodeValidationRequest = {
         targetNodeID : Text;
-        validator : Principal;
+//        validator : Principal;
         validationTicket : Nat;
         power: Nat;
     };
