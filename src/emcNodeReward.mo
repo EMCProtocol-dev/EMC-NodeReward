@@ -614,7 +614,7 @@ shared (msg) actor class EmcNodeReward(
                 let unit : NodeValidationUnit = {
                     nodeID = val.targetNodeID;
                     nodeType = NodeComputing;
-                    validator = msg.caller;//use caller to avoid fake/wrong validator
+                    validator = msg.caller; //use caller to avoid fake/wrong validator
                     validationTicket = val.validationTicket;
                     power = 15_000 * 10_000 / val.power; //X10_000 to avoid using float type
                     validationDay = today;
@@ -1024,40 +1024,44 @@ shared (msg) actor class EmcNodeReward(
         let targetDay = Int.abs(Time.now() / dayNanos);
         let dayReward = emcReward.getDayReward(targetDay -startDay);
         var currentRD = HashMap.HashMap<Text, Nat>(1, Text.equal, Text.hash);
+        var totalPower : Nat = 0;
+        var simulatedEPower = simulateEPower(Int.abs((Time.now() - targetDay * dayNanos) * 100 / dayNanos));
+        //addup routers
+        let router_iter = Trie.iter(routerNodes);
+        let router_iter_bak = router_iter;
+        for ((k, v) in router_iter) {
+            totalPower += simulatedEPower * getStakePower(v.nodeID);
+        };
+
+        //addup validators
+        let validator_iter = Trie.iter(validatorNodes);
+        let validator_iter_bak = validator_iter;
+        for ((k, v) in validator_iter) {
+            totalPower += simulatedEPower * getStakePower(v.nodeID);
+        };
+
         switch (rewardPools.get(targetDay)) {
             case (?rewardRecords) {
-                var totalPower : Nat = 0;
-                var simulatedEPower = simulateEPower(Int.abs((Time.now() - targetDay * dayNanos) * 100 / dayNanos));
-
                 for (val in rewardRecords.vals()) {
                     totalPower += val.computingPower * getStakePower(val.nodeID);
-                };
-                //addup routers
-                let router_iter = Trie.iter(routerNodes);
-                for ((k, v) in router_iter) {
-                    totalPower += simulatedEPower * getStakePower(v.nodeID);
-                };
-
-                //addup validators
-                let validator_iter = Trie.iter(validatorNodes);
-                for ((k, v) in validator_iter) {
-                    totalPower += simulatedEPower * getStakePower(v.nodeID);
                 };
 
                 for (val in rewardRecords.vals()) {
                     currentRD.put(val.nodeID, dayReward * (val.computingPower * getStakePower(val.nodeID)) / totalPower);
-                };
-                for ((k, v) in router_iter) {
-                    currentRD.put(v.nodeID, dayReward * simulatedEPower * getStakePower(v.nodeID) / totalPower);
-                };
-                for ((k, v) in validator_iter) {
-                    currentRD.put(v.nodeID, dayReward * simulatedEPower * getStakePower(v.nodeID) / totalPower);
                 };
             };
             case (_) {
                 //nothing to do
             };
         };
+
+        for ((k, v) in router_iter_bak) {
+            currentRD.put(v.nodeID, dayReward * simulatedEPower * getStakePower(v.nodeID) / totalPower);
+        };
+        for ((k, v) in validator_iter_bak) {
+            currentRD.put(v.nodeID, dayReward * simulatedEPower * getStakePower(v.nodeID) / totalPower);
+        };
+
         return Iter.toArray(currentRD.entries());
     };
 
