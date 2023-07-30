@@ -1028,14 +1028,14 @@ shared (msg) actor class EmcNodeReward(
         var simulatedEPower = simulateEPower(Int.abs((Time.now() - targetDay * dayNanos) * 100 / dayNanos));
         //addup routers
         let router_iter = Trie.iter(routerNodes);
-        let router_iter_bak = router_iter;
+        let router_iter_bak = Trie.iter(routerNodes);
         for ((k, v) in router_iter) {
             totalPower += simulatedEPower * getStakePower(v.nodeID);
         };
 
         //addup validators
         let validator_iter = Trie.iter(validatorNodes);
-        let validator_iter_bak = validator_iter;
+        let validator_iter_bak = Trie.iter(validatorNodes);
         for ((k, v) in validator_iter) {
             totalPower += simulatedEPower * getStakePower(v.nodeID);
         };
