@@ -47,6 +47,8 @@ shared (msg) actor class EmcNodeReward(
             #StakeNotEnough;
             #NoStakeFound;
             #CanNotUnstake;
+            #InsufficientBalance;
+            #UnknownError;
         };
     };
 
@@ -637,7 +639,7 @@ shared (msg) actor class EmcNodeReward(
         await tokenCanister.balanceOf(Principal.fromActor(self));
     };
 
-    public shared (msg) func withdrawTo(account : Principal) : async Nat {
+    public shared (msg) func withdrawTo(account : Principal) : async emcResult {
         if (msg.caller != owner) {
             return #Err(#CallerNotAuthorized);
         };
@@ -652,13 +654,13 @@ shared (msg) actor class EmcNodeReward(
         switch (res) {
             case (#Ok(txnID)) {
                 rewardPoolBalance := 0;
-                return toWithdraw;
+                return #Ok(toWithdraw);
             };
             case (#Err(#InsufficientBalance)) {
-                return 0;
+                return #Err(#InsufficientBalance);
             };
             case (#Err(other)) {
-                return 0;
+                return #Err(#UnknownError);
             };
         };
     };
