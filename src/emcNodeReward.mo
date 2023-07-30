@@ -119,13 +119,17 @@ shared (msg) actor class EmcNodeReward(
     private stable var rewardStatus = Trie.empty<Text, emcReward.RewardStatus>();
 
     public shared (msg) func stopTestnet() : async emcResult {
-        assert (msg.caller == owner);
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         testnetRunning := false;
         return #Ok(0);
     };
 
     public shared (msg) func startTestnet() : async emcResult {
-        assert (msg.caller == owner);
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         testnetRunning := true;
         startDay := Int.abs(Time.now() / dayNanos);
         return #Ok(0);
@@ -452,6 +456,9 @@ shared (msg) actor class EmcNodeReward(
     };
 
     public shared (msg) func updateDayValidaionRounds(rounds : Nat) : async emcResult {
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         dayValidationRounds := rounds;
         return #Ok(0);
     };
@@ -631,7 +638,9 @@ shared (msg) actor class EmcNodeReward(
     };
 
     public shared (msg) func withdrawTo(account : Principal) : async Nat {
-        assert (msg.caller == owner);
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         let emcBalance = await tokenCanister.balanceOf(Principal.fromActor(self));
         var toWithdraw : Nat = 0;
         if (rewardPoolBalance + totalStaking <= emcBalance) {
@@ -886,11 +895,13 @@ shared (msg) actor class EmcNodeReward(
         return (Trie.size(routerNodes), Trie.size(validatorNodes), Trie.size(computingNodes), pogCount);
     };
 
-    public shared (msg) func postDeposit() : async (Nat) {
-        assert (msg.caller == owner);
+    public shared (msg) func postDeposit() : async emcResult {
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         let emcBalance = await tokenCanister.balanceOf(Principal.fromActor(self));
         rewardPoolBalance := emcBalance - totalStaking;
-        return rewardPoolBalance;
+        return #Ok(rewardPoolBalance);
     };
 
     public shared query (msg) func showFaildReward(start : Nat, length : Nat) : async [emcReward.FailedReward] {
@@ -1049,13 +1060,17 @@ shared (msg) actor class EmcNodeReward(
     };
 
     public shared (msg) func exeuteReward() : async emcResult {
-        assert (msg.caller == owner);
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         await distributeReward();
         return #Ok(0);
     };
 
     public shared (msg) func launchRewardTask() : async emcResult {
-        assert (msg.caller == owner);
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
 
         ignore Timer.setTimer(
             #seconds(daySeconds - Int.abs(Time.now() / 1_000_000_000) % daySeconds + hourSeconds),
@@ -1069,7 +1084,9 @@ shared (msg) actor class EmcNodeReward(
     };
 
     public shared (msg) func cancelRewardTask() : async emcResult {
-        assert (msg.caller == owner);
+        if (msg.caller != owner) {
+            return #Err(#CallerNotAuthorized);
+        };
         Timer.cancelTimer(timerID);
         return #Ok(0);
     };
@@ -1090,36 +1107,36 @@ shared (msg) actor class EmcNodeReward(
 
     // changed to use stable vars, should only be executed one time, delete them all after upgrade
     system func postupgrade() {
-        for((k, v) in nodeEntries.vals()){
-            if(v.nodeType == NodeRouter){
-                routerNodes := Trie.put(routerNodes, text_key(k), Text.equal, v).0;
-                routers := Trie.put(routers, account_key(v.owner), Principal.equal, Time.now()).0;
-            }else if(v.nodeType == NodeValidator){
-                validatorNodes := Trie.put(validatorNodes, text_key(k), Text.equal, v).0;
-            }else if(v.nodeType == NodeComputing){
-                computingNodes := Trie.put(computingNodes, text_key(k), Text.equal, v).0;
-            }
-        };
-        nodeEntries := [];
+        // for((k, v) in nodeEntries.vals()){
+        //     if(v.nodeType == NodeRouter){
+        //         routerNodes := Trie.put(routerNodes, text_key(k), Text.equal, v).0;
+        //         routers := Trie.put(routers, account_key(v.owner), Principal.equal, Time.now()).0;
+        //     }else if(v.nodeType == NodeValidator){
+        //         validatorNodes := Trie.put(validatorNodes, text_key(k), Text.equal, v).0;
+        //     }else if(v.nodeType == NodeComputing){
+        //         computingNodes := Trie.put(computingNodes, text_key(k), Text.equal, v).0;
+        //     }
+        // };
+        // nodeEntries := [];
 
-        for((k, v) in validatorEntries.vals()){
-            validators := Trie.put(validators, account_key(k), Principal.equal, v).0;
-        };
-        validatorEntries := [];
+        // for((k, v) in validatorEntries.vals()){
+        //     validators := Trie.put(validators, account_key(k), Principal.equal, v).0;
+        // };
+        // validatorEntries := [];
 
-        for((k, v) in rewardStatusEntries.vals()){
-            rewardStatus := Trie.put(rewardStatus, text_key(k), Text.equal, v).0;
-        };
-        rewardStatusEntries := [];
+        // for((k, v) in rewardStatusEntries.vals()){
+        //     rewardStatus := Trie.put(rewardStatus, text_key(k), Text.equal, v).0;
+        // };
+        // rewardStatusEntries := [];
 
-        for((k, v) in stakePoolEntires.vals()){
-            stakePool := Trie.put(stakePool, text_key(k), Text.equal, v).0;
-        };
-        stakePoolEntires := [];
+        // for((k, v) in stakePoolEntires.vals()){
+        //     stakePool := Trie.put(stakePool, text_key(k), Text.equal, v).0;
+        // };
+        // stakePoolEntires := [];
 
-        for((k, v) in failedRewardEntries.vals()){
-            failedRewardPool := Trie.put(failedRewardPool, text_key(k), Text.equal, v).0;
-        };
-        failedRewardEntries := [];
+        // for((k, v) in failedRewardEntries.vals()){
+        //     failedRewardPool := Trie.put(failedRewardPool, text_key(k), Text.equal, v).0;
+        // };
+        // failedRewardEntries := [];
     };
 };
