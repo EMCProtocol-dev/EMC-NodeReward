@@ -1093,6 +1093,7 @@ shared (msg) actor class EmcNodeReward(
         for((k, v) in nodeEntries.vals()){
             if(v.nodeType == NodeRouter){
                 routerNodes := Trie.put(routerNodes, text_key(k), Text.equal, v).0;
+                routers := Trie.put(routers, account_key(v.owner), Principal.equal, Time.now()).0;
             }else if(v.nodeType == NodeValidator){
                 validatorNodes := Trie.put(validatorNodes, text_key(k), Text.equal, v).0;
             }else if(v.nodeType == NodeComputing){
